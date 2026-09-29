@@ -2,22 +2,49 @@
 /**
  * postinstall.js — 安装后品牌补丁
  *
- * 将 Pi 编译产物中的品牌标识替换为 Lyu-code：
- * 1. piConfigName="lyu-code" — 使 APP_NAME 和 APP_TITLE 都是 "lyu-code"
- * 2. AI_AGENT="lyu-code" — 标识 agent 类型
- * 3. onboarding 文本 — "Pi can explain..." → "Lyu-code can explain..."
- *
- * Pi 的品牌逻辑（编译时 bake 进 bundle）：
+ * 核心策略：Pi 的 config.js 在启动时读取自己的 package.json：
  *   piConfigName = pkg.piConfig?.name
  *   APP_NAME = piConfigName || "pi"
- *   APP_TITLE = piConfigName ? APP_NAME : "π"  ← 那个 π 符号
- *   onboarding = "Pi can explain its own features..."
+ *   APP_TITLE = piConfigName ? APP_NAME : "π"
+ *
+ * 所以只需在 pi-coding-agent 的 package.json 中设置
+ * piConfig.name = "lyu-code"，Pi 就会自动把所有品牌标识
+ * （APP_NAME、APP_TITLE、终端标题、欢迎语等）都变成 lyu-code。
+ *
+ * 作为兜底，同时对 bundle chunks 做文本替换 patch，
+ * 防止某些场景下 package.json 未被读取（如 Bun binary）。
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 const BRAND_NAME = "lyu-code";
+
+// ─── 1. package.json piConfig.name 补丁（首选方案） ───────────────────
+
+function patchPiConfigName(piDir: string): boolean {
+  const pkgPath = path.join(piDir, "package.json");
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const raw = fs.readFileSync(pkgPath, "utf-8");
+    const pkg = JSON.parse(raw);
+
+    if (pkg.piConfig?.name === BRAND_NAME) return false; // 已经 patch 过
+
+    if (!pkg.piConfig) pkg.piConfig = {};
+    pkg.piConfig.name = BRAND_NAME;
+
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+    return true;
+  } catch (e) {
+    console.warn(`[lyu-code:postinstall] Failed to patch piConfig in ${pkgPath}:`, e);
+    return false;
+  }
+}
+
+// ─── 2. Bundle chunks 文本替换补丁（兜底方案） ────────────────────────
+
 const FILES_TO_PATCH = [
   "dist/bundle/chunks/chunk-OJP47DM6.js",
   "dist/bundle/cli-runtime.js",
@@ -37,10 +64,37 @@ const TEXT_REPLACEMENTS: [string, string][] = [
     "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.",
     `${BRAND_NAME} can explain its own features. Ask it how to use or extend ${BRAND_NAME}.`,
   ],
-
-  // Pi 自更新提示中的 "pi" 命令引用
-  // （这些在 APP_NAME 已 patch 后会自动变成 "lyu-code"，不需要额外处理）
 ];
+
+function patchChunk(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+
+  let content = fs.readFileSync(filePath, "utf-8");
+  let modified = false;
+
+  for (const [from, to] of TEXT_REPLACEMENTS) {
+    if (content.includes(from)) {
+      content = content.replaceAll(from, to);
+      modified = true;
+    }
+  }
+
+  // process.title 覆盖（cli-runtime.js）
+  if (content.includes("process.title=APP_NAME,process.env.PI_CODING_AGENT") && !content.includes("process.env.LYU_CODE")) {
+    content = content.replace(
+      "process.title=APP_NAME,process.env.PI_CODING_AGENT",
+      `process.title=APP_NAME,process.env.LYU_CODE&&(process.title="${BRAND_NAME}"),process.env.PI_CODING_AGENT`
+    );
+    modified = true;
+  }
+
+  if (modified) {
+    fs.writeFileSync(filePath, content, "utf-8");
+  }
+  return modified;
+}
+
+// ─── 查找 Pi 安装目录 ────────────────────────────────────────────────
 
 function findPiDistDirs(): string[] {
   const candidates: string[] = [];
@@ -71,33 +125,7 @@ function findPiDistDirs(): string[] {
   return candidates.filter((d) => fs.existsSync(path.join(d, "dist")));
 }
 
-function patchChunk(filePath: string): boolean {
-  if (!fs.existsSync(filePath)) return false;
-
-  let content = fs.readFileSync(filePath, "utf-8");
-  let modified = false;
-
-  for (const [from, to] of TEXT_REPLACEMENTS) {
-    if (content.includes(from)) {
-      content = content.replaceAll(from, to);
-      modified = true;
-    }
-  }
-
-  // process.title 覆盖（cli-runtime.js）
-  if (content.includes("process.title=APP_NAME,process.env.PI_CODING_AGENT") && !content.includes("process.env.LYU_CODE")) {
-    content = content.replace(
-      "process.title=APP_NAME,process.env.PI_CODING_AGENT",
-      `process.title=APP_NAME,process.env.LYU_CODE&&(process.title="${BRAND_NAME}"),process.env.PI_CODING_AGENT`
-    );
-    modified = true;
-  }
-
-  if (modified) {
-    fs.writeFileSync(filePath, content, "utf-8");
-  }
-  return modified;
-}
+// ─── 主流程 ──────────────────────────────────────────────────────────
 
 function main() {
   const piDirs = findPiDistDirs();
@@ -107,14 +135,24 @@ function main() {
   }
 
   for (const piDir of piDirs) {
-    let patched = 0;
+    // 首选：package.json piConfig.name
+    const configPatched = patchPiConfigName(piDir);
+
+    // 兜底：bundle chunks 文本替换
+    let chunksPatched = 0;
     for (const relPath of FILES_TO_PATCH) {
       if (patchChunk(path.join(piDir, relPath))) {
-        patched++;
+        chunksPatched++;
       }
     }
-    if (patched > 0) {
-      console.log(`[lyu-code:postinstall] Branded ${patched} file(s) → "${BRAND_NAME}"`);
+
+    if (configPatched || chunksPatched > 0) {
+      const parts: string[] = [];
+      if (configPatched) parts.push("piConfig.name");
+      if (chunksPatched > 0) parts.push(`${chunksPatched} chunk(s)`);
+      console.log(`[lyu-code:postinstall] Branded → "${BRAND_NAME}" (${parts.join(" + ")})`);
+    } else {
+      console.log(`[lyu-code:postinstall] Already branded → "${BRAND_NAME}"`);
     }
   }
 }
