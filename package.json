@@ -1,0 +1,32 @@
+{
+  "name": "lyu-code",
+  "version": "0.1.0",
+  "description": "A minimal coding agent built on Pi — Extension 选装，不做中间层",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "node packages/cli/dist/index.js",
+    "lyu": "node packages/cli/dist/index.js",
+    "init": "node packages/cli/dist/init.js",
+    "prepublishOnly": "pnpm build"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "packageManager": "pnpm@11.0.9",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeeeeeKdY/lyu-code.git"
+  },
+  "homepage": "https://github.com/WeeeeeKdY/lyu-code",
+  "keywords": [
+    "coding-agent",
+    "ai",
+    "cli",
+    "pi",
+    "llm",
+    "developer-tools"
+  ],
+  "license": "MIT",
+  "author": "WeeeeeKdY"
+}

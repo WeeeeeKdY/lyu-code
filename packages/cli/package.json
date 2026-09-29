@@ -1,0 +1,45 @@
+{
+  "name": "lyu-code",
+  "version": "0.1.0",
+  "description": "A minimal coding agent built on Pi — Extension 选装，不做中间层",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "lyu": "dist/index.js",
+    "lyu-init": "dist/init.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@earendil-works/pi-agent-core": "^0.87.1",
+    "@earendil-works/pi-ai": "^0.87.1",
+    "@earendil-works/pi-tui": "^0.87.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeeeeeKdY/lyu-code.git",
+    "directory": "packages/cli"
+  },
+  "license": "MIT",
+  "keywords": [
+    "coding-agent",
+    "ai",
+    "cli",
+    "pi",
+    "llm",
+    "developer-tools"
+  ]
+}

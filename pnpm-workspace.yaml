@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+  - "packages/extensions/*"
+allowBuilds:
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true
