@@ -1,60 +1,58 @@
 #!/usr/bin/env node
 /**
- * postinstall.js — 安装后补丁
+ * postinstall.js — 安装后品牌补丁
  *
- * 将 Pi 编译产物中的 APP_NAME="pi" 替换为 APP_NAME="lyu-code"，
- * 使 TUI 标题栏、启动画面、session 文件名等显示 Lyu-code 品牌。
+ * 将 Pi 编译产物中的品牌标识替换为 Lyu-code：
+ * 1. piConfigName="lyu-code" — 使 APP_NAME 和 APP_TITLE 都是 "lyu-code"
+ * 2. AI_AGENT="lyu-code" — 标识 agent 类型
  *
- * 这和 MiniMax Code 等二次分发项目的做法一致：
- * Pi 的 APP_NAME 是编译时常量，无法通过环境变量覆盖，
- * 只能 patch 编译产物。
+ * Pi 的品牌逻辑（编译时 bake 进 bundle）：
+ *   piConfigName = pkg.piConfig?.name   // 从 package.json 读
+ *   APP_NAME = piConfigName || "pi"     // 默认 "pi"
+ *   APP_TITLE = piConfigName ? APP_NAME : "π"  // 默认 "π" 符号
+ *
+ * 没有 piConfig.name 时，APP_NAME="pi" 且 APP_TITLE="π"，
+ * 所以必须 patch piConfigName 而不仅仅是 APP_NAME。
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const NEW_APP_NAME = "lyu-code";
+const BRAND_NAME = "lyu-code";
 const FILES_TO_PATCH = [
-  // 主 chunk（包含 APP_NAME 定义）
   "dist/bundle/chunks/chunk-OJP47DM6.js",
-  // CLI runtime（设 process.title 和 AI_AGENT）
   "dist/bundle/cli-runtime.js",
-  // RPC entry
   "dist/bundle/rpc-entry.js",
-  // CLI setup
-  "dist/cli/setup.js",
-  // RPC entry (non-bundle)
-  "dist/rpc-entry.js",
 ];
 
-function findPiDistDir(): string | null {
+function findPiDistDirs(): string[] {
+  const candidates: string[] = [];
+
   // 从当前包的 node_modules 向上找
-  const candidates = [
-    path.resolve(import.meta.dirname, "node_modules/@earendil-works/pi-coding-agent"),
-    path.resolve(import.meta.dirname, "../node_modules/@earendil-works/pi-coding-agent"),
-  ];
+  const thisDir = import.meta.dirname ?? path.dirname(import.meta.url.replace("file://", ""));
+  for (const base of [thisDir, path.resolve(thisDir, "..")]) {
+    const direct = path.join(base, "node_modules/@earendil-works/pi-coding-agent");
+    if (fs.existsSync(path.join(direct, "dist"))) candidates.push(direct);
+  }
 
-  // 也检查 pnpm 的 .pnpm 目录
-  try {
-    const pnpmDir = path.resolve(import.meta.dirname, "node_modules/.pnpm");
+  // pnpm .pnpm 目录
+  for (const base of [thisDir, path.resolve(thisDir, "..")]) {
+    const pnpmDir = path.join(base, "node_modules/.pnpm");
     if (fs.existsSync(pnpmDir)) {
-      const entries = fs.readdirSync(pnpmDir).filter((e) => e.startsWith("@earendil-works+pi-coding-agent"));
-      for (const entry of entries) {
-        candidates.push(
-          path.join(pnpmDir, entry, "node_modules/@earendil-works/pi-coding-agent")
-        );
-      }
+      try {
+        const entries = fs.readdirSync(pnpmDir).filter((e) => e.startsWith("@earendil-works+pi-coding-agent"));
+        for (const entry of entries) {
+          candidates.push(path.join(pnpmDir, entry, "node_modules/@earendil-works/pi-coding-agent"));
+        }
+      } catch { /* ignore */ }
     }
-  } catch {
-    // ignore
   }
 
-  for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, "dist"))) {
-      return dir;
-    }
-  }
-  return null;
+  // npm global
+  const npmGlobal = path.resolve(process.execPath, "../lib/node_modules/lyu-code/node_modules/@earendil-works/pi-coding-agent");
+  if (fs.existsSync(path.join(npmGlobal, "dist"))) candidates.push(npmGlobal);
+
+  return candidates.filter((d) => fs.existsSync(path.join(d, "dist")));
 }
 
 function patchFile(filePath: string): boolean {
@@ -63,24 +61,27 @@ function patchFile(filePath: string): boolean {
   let content = fs.readFileSync(filePath, "utf-8");
   let modified = false;
 
-  // 替换 APP_NAME="pi" → APP_NAME="lyu-code"
-  if (content.includes('APP_NAME="pi"')) {
-    content = content.replaceAll('APP_NAME="pi"', `APP_NAME="${NEW_APP_NAME}"`);
+  // 核心补丁：piConfigName=pkg.piConfig?.name → piConfigName="lyu-code"
+  // 这会让 APP_NAME = "lyu-code", APP_TITLE = "lyu-code"（不再显示 "π"）
+  if (content.includes("piConfigName=pkg.piConfig?.name")) {
+    content = content.replace(
+      /piConfigName=pkg\.piConfig\?\.name/g,
+      `piConfigName="${BRAND_NAME}"`
+    );
     modified = true;
   }
 
-  // 替换 AI_AGENT="pi" → AI_AGENT="lyu-code"
+  // 补丁：AI_AGENT="pi" → AI_AGENT="lyu-code"
   if (content.includes('AI_AGENT="pi"')) {
-    content = content.replaceAll('AI_AGENT="pi"', `AI_AGENT="${NEW_APP_NAME}"`);
+    content = content.replaceAll('AI_AGENT="pi"', `AI_AGENT="${BRAND_NAME}"`);
     modified = true;
   }
 
-  // 替换 process.title=APP_NAME 后追加覆盖（如果 main 里会覆盖 process.title）
-  // 对于 cli-runtime.js，需要把 setupCli 里的 process.title=APP_NAME 后面加一行覆盖
-  if (content.includes("process.title=APP_NAME") && !content.includes("process.title=APP_NAME,process.env.LYU_CODE")) {
+  // 补丁：process.title 覆盖（cli-runtime.js）
+  if (content.includes("process.title=APP_NAME,process.env.PI_CODING_AGENT") && !content.includes("process.env.LYU_CODE")) {
     content = content.replace(
       "process.title=APP_NAME,process.env.PI_CODING_AGENT",
-      `process.title=APP_NAME,process.env.LYU_CODE&&(process.title="${NEW_APP_NAME}"),process.env.PI_CODING_AGENT`
+      `process.title=APP_NAME,process.env.LYU_CODE&&(process.title="${BRAND_NAME}"),process.env.PI_CODING_AGENT`
     );
     modified = true;
   }
@@ -92,25 +93,23 @@ function patchFile(filePath: string): boolean {
 }
 
 function main() {
-  const piDir = findPiDistDir();
-  if (!piDir) {
+  const piDirs = findPiDistDirs();
+  if (piDirs.length === 0) {
     console.log("[lyu-code:postinstall] Pi dist not found, skipping brand patch");
     return;
   }
 
-  let patched = 0;
-  for (const relPath of FILES_TO_PATCH) {
-    const filePath = path.join(piDir, relPath);
-    if (patchFile(filePath)) {
-      patched++;
-      console.log(`  ✅ Patched ${relPath}`);
+  for (const piDir of piDirs) {
+    let patched = 0;
+    for (const relPath of FILES_TO_PATCH) {
+      const filePath = path.join(piDir, relPath);
+      if (patchFile(filePath)) {
+        patched++;
+      }
     }
-  }
-
-  if (patched > 0) {
-    console.log(`[lyu-code:postinstall] Branded ${patched} file(s) → APP_NAME="${NEW_APP_NAME}"`);
-  } else {
-    console.log("[lyu-code:postinstall] No files) files needed patching (already branded or not found)");
+    if (patched > 0) {
+      console.log(`[lyu-code:postinstall] Branded ${patched} file(s) in ${piDir} → "${BRAND_NAME}"`);
+    }
   }
 }
 
