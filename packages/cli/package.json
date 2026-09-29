@@ -1,6 +1,6 @@
 {
   "name": "lyu-code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A minimal coding agent built on Pi — Extension 选装，不做中间层",
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +13,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json --watch"
+    "dev": "tsc -p tsconfig.json --watch",
+    "postinstall": "node dist/postinstall.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.1",
