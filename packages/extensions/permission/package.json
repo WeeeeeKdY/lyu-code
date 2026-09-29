@@ -1,5 +1,5 @@
 {
-  "name": "@weeeeekdy/lyu-extension-permission",
+  "name": "lyu-extension-permission",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -24,9 +24,6 @@
     "dist"
   ],
   "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/WeeeeeKdY/lyu-code.git",
