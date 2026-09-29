@@ -1,6 +1,6 @@
 {
   "name": "lyu-code",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A minimal coding agent built on Pi — Extension 选装，不做中间层",
   "type": "module",
   "scripts": {
