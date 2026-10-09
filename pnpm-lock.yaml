@@ -192,6 +192,38 @@ importers:
         specifier: ^5.8.0
         version: 5.9.3
 
+  packages/extensions/wf-agent-guard:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.87.1
+        version: 0.87.1(ws@8.22.0)
+    devDependencies:
+      '@sinclair/typebox':
+        specifier: ^0.34.0
+        version: 0.34.52
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.4
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+
+  packages/extensions/workflow:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: ^0.87.1
+        version: 0.87.1(ws@8.22.0)
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.87.1
+        version: 0.87.1(ws@8.22.0)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.4
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+
 packages:
 
   '@anthropic-ai/sdk@0.124.0':

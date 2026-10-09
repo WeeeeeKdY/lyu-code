@@ -23,6 +23,8 @@ import type {
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
+import { execSync, execFile } from "node:child_process";
 import { URL } from "node:url";
 
 const DEFAULT_PORT = 18789;
@@ -31,23 +33,42 @@ const DEFAULT_PORT = 18789;
 
 interface WorkflowNode {
   id: string;
-  type: "agent";
+  type: "agent" | "if" | "for";
   label: string;
   config: {
+    // agent
     systemPrompt?: string;
     model?: string;
-    tools?: string[];
+    tools?: string[];            // 白名单模式：只允许这些工具
+    disabledTools?: string[];    // 黑名单模式：禁用这些工具
+    customTools?: CustomTool[];  // 通过 extension 注册的自定义工具
     maxLoops?: number;
     maxTokens?: number;
+    // if
+    condition?: string;         // JS 表达式，可引用 $input（上游输出）
+    // for
+    loopCount?: number;         // 循环次数（静态）
+    loopExpr?: string;          // 动态表达式，可引用 $input
+    breakCondition?: string;    // break 条件表达式
+    loopBodyNodeIds?: string[]; // 循环体内节点 ID（子图）
   };
   position: { x: number; y: number };
+}
+
+interface CustomTool {
+  name: string;
+  description: string;
+  type: "extension" | "builtin" | "mcp";
+  source?: string;  // extension 名 / MCP server 名
+  schema?: Record<string, unknown>;  // JSON Schema for parameters
 }
 
 interface WorkflowEdge {
   id: string;
   source: string;
   target: string;
-  label?: string;
+  label?: string;           // e.g. "true" / "false" for if-node 分支
+  sourcePort?: string;     // "out" | "true" | "false" | "body" | "done"
 }
 
 interface Workflow {
@@ -56,6 +77,7 @@ interface Workflow {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   globalMaxLoops: number;
+  maxUpstreamLength: number; // 单个上游输出最大字符数，0=不限
   createdAt: number;
   updatedAt: number;
 }
@@ -75,8 +97,7 @@ interface RunState {
 // ─── 简易 WebSocket (RFC 6455, 最小实现) ──────────────────────────
 
 function wsAcceptKey(key: string): string {
-  const crypto = require("node:crypto") as typeof import("node:crypto");
-  return crypto.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-5AB5DC828B12").digest("base64");
+  return crypto.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
 }
 
 interface WsClient {
@@ -93,6 +114,7 @@ let piRef: ExtensionAPI | null = null;
 const workflows = new Map<string, Workflow>();
 const runStates = new Map<string, RunState>();
 const wsClients: WsClient[] = [];
+const registeredCustomTools = new Map<string, CustomTool>();
 
 // ─── 广播 ──────────────────────────────────────────────────────────
 
@@ -177,6 +199,7 @@ function handleWsMessage(raw: string) {
         nodes: msg.data?.nodes ?? [],
         edges: msg.data?.edges ?? [],
         globalMaxLoops: msg.data?.globalMaxLoops ?? 10,
+        maxUpstreamLength: msg.data?.maxUpstreamLength ?? 8000,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -265,52 +288,98 @@ function handleWsMessage(raw: string) {
       }
       break;
     }
+
+    // ─── 工具管理 ────────────────────────────────
+    case "tool:list": {
+      const builtinTools = [
+        { name: "read", description: "Read file contents", type: "builtin" },
+        { name: "write", description: "Write file contents", type: "builtin" },
+        { name: "edit", description: "Edit file with exact text replacement", type: "builtin" },
+        { name: "bash", description: "Execute bash commands", type: "builtin" },
+        { name: "grep", description: "Search files by pattern", type: "builtin" },
+        { name: "glob", description: "Find files by glob pattern", type: "builtin" },
+        { name: "web_search", description: "Search the web", type: "builtin" },
+        { name: "mcp", description: "Call MCP server tools", type: "mcp" },
+      ];
+      const customTools = [...registeredCustomTools.values()];
+      broadcast("tool:list", { builtin: builtinTools, custom: customTools });
+      break;
+    }
+
+    case "tool:register": {
+      const tool: CustomTool = {
+        name: msg.data?.name,
+        description: msg.data?.description ?? "",
+        type: msg.data?.toolType ?? "extension",
+        source: msg.data?.source,
+        schema: msg.data?.schema,
+      };
+      if (tool.name) {
+        registeredCustomTools.set(tool.name, tool);
+        broadcast("tool:registered", tool);
+      }
+      break;
+    }
+
+    case "tool:unregister": {
+      registeredCustomTools.delete(msg.data?.name);
+      broadcast("tool:unregistered", { name: msg.data?.name });
+      break;
+    }
   }
 }
 
 // ─── Workflow 执行引擎 ─────────────────────────────────────────────
 
 async function runWorkflow(wf: Workflow, state: RunState): Promise<void> {
-  const sorted = topoSort(wf.nodes, wf.edges);
+  const layers = topoLayers(wf.nodes, wf.edges);
 
   for (let iter = 0; iter < wf.globalMaxLoops; iter++) {
     state.iteration = iter + 1;
     broadcast("run:state", { workflowId: wf.id, state });
 
-    for (const node of sorted) {
-      const ns = state.results[node.id];
-      if (!ns) continue;
-      ns.status = "running";
-      state.currentStep = node.id;
-      broadcast("run:state", { workflowId: wf.id, state });
+    for (const layer of layers) {
+      if (state.status !== "running") break;
 
-      // 收集上游输出
-      const upstream = wf.edges
-        .filter(e => e.target === node.id)
-        .map(e => state.results[e.source]?.output ?? "")
-        .filter(Boolean)
-        .join("\n\n");
+      // 同一层内：非 agent 节点串行（if/for 有分支副作用），agent 节点并行
+      const nonAgentNodes = layer.filter(n => n.type !== "agent");
+      const agentNodes = layer.filter(n => n.type === "agent");
 
-      // 通过 Pi 驱动 agent
-      if (piRef) {
-        const prompt = upstream
-          ? `[上游输入]\n${upstream}\n\n[请处理以上输入并输出结果]`
-          : node.config.systemPrompt ?? "请开始工作";
-        piRef.sendUserMessage(prompt, { deliverAs: "followUp" });
+      // 先串行执行 if/for 节点
+      for (const node of nonAgentNodes) {
+        if (state.status !== "running") break;
+        await executeNode(node, wf, state);
       }
 
-      // 等待一小段时间让 Pi 处理（实际结果由 agent_end 事件回填）
-      await new Promise(r => setTimeout(r, 500));
+      // 再并行执行同层的 agent 节点
+      if (agentNodes.length > 0 && state.status === "running") {
+        const agentPromises = agentNodes.map(async (node) => {
+          const ns = state.results[node.id];
+          if (!ns) return;
+          ns.status = "running";
+          state.currentStep = node.id;
+          broadcast("run:state", { workflowId: wf.id, state });
 
-      ns.status = "done";
-      ns.iterations = (ns.iterations ?? 0) + 1;
-      broadcast("run:state", { workflowId: wf.id, state });
+          const upstream = collectUpstream(node.id, wf, state);
+          try {
+            ns.output = await executeAgentNode(node, upstream);
+            ns.status = "done";
+          } catch (err) {
+            ns.output = `Error: ${err}`;
+            ns.status = "error";
+          }
+          ns.iterations = (ns.iterations ?? 0) + 1;
+          broadcast("run:state", { workflowId: wf.id, state });
+        });
+        await Promise.all(agentPromises);
+      }
     }
 
     // 无回边则不循环
     const hasBack = wf.edges.some(e => {
-      const si = sorted.findIndex(n => n.id === e.source);
-      const ti = sorted.findIndex(n => n.id === e.target);
+      const allNodes = layers.flat();
+      const si = allNodes.findIndex(n => n.id === e.source);
+      const ti = allNodes.findIndex(n => n.id === e.target);
       return ti <= si;
     });
     if (!hasBack) break;
@@ -321,28 +390,284 @@ async function runWorkflow(wf: Workflow, state: RunState): Promise<void> {
   broadcast("run:state", { workflowId: wf.id, state });
 }
 
+/** 收集上游输出，JSON 包层带来源标识，截断过长输出 */
+function collectUpstream(nodeId: string, wf: Workflow, state: RunState): string {
+  const incomingEdges = wf.edges.filter(e => e.target === nodeId);
+  if (incomingEdges.length === 0) return "";
+
+  const maxLen = wf.maxUpstreamLength || 0; // 0 = 不限
+
+  const sources = incomingEdges.map(e => {
+    const sourceNode = wf.nodes.find(n => n.id === e.source);
+    const rawOutput = state.results[e.source]?.output ?? "";
+    const truncated = maxLen > 0 && rawOutput.length > maxLen
+      ? rawOutput.slice(0, maxLen) + `\n... [截断: 原文${rawOutput.length}字符, 保留${maxLen}字符]`
+      : rawOutput;
+    return {
+      sourceNodeId: e.source,
+      sourceLabel: sourceNode?.label ?? e.source,
+      sourcePort: e.sourcePort || "out",
+      output: truncated,
+    };
+  });
+
+  return JSON.stringify(sources, null, 2);
+}
+
+/** 执行单个节点（if/for/agent），串行调用 */
+async function executeNode(node: WorkflowNode, wf: Workflow, state: RunState): Promise<void> {
+  const ns = state.results[node.id];
+  if (!ns) return;
+  const allNodes = wf.nodes;
+
+  // ─── IF 节点 ────────────────────────────────
+  if (node.type === "if") {
+    ns.status = "running";
+    state.currentStep = node.id;
+    broadcast("run:state", { workflowId: wf.id, state });
+
+    const upstream = collectUpstream(node.id, wf, state);
+    const branch = evalCondition(node.config.condition ?? "true", upstream);
+    ns.output = String(branch);
+    ns.status = "done";
+    broadcast("run:state", { workflowId: wf.id, state });
+    broadcast("run:ifBranch", { workflowId: wf.id, nodeId: node.id, branch });
+
+    const portName = branch ? "true" : "false";
+    const activeTargets = wf.edges
+      .filter(e => e.source === node.id && (e.sourcePort === portName || (!e.sourcePort && e.label === portName)))
+      .map(e => e.target);
+    for (const n of allNodes) {
+      if (activeTargets.includes(n.id)) continue;
+      const inActive = wf.edges.some(e => e.source === node.id && e.target === n.id && (e.sourcePort !== portName && (e.sourcePort || e.label) !== portName));
+      if (inActive) state.results[n.id] = { status: "done" as const, output: "[skipped]" };
+    }
+    return;
+  }
+
+  // ─── FOR 节点 ───────────────────────────────
+  if (node.type === "for") {
+    ns.status = "running";
+    state.currentStep = node.id;
+    broadcast("run:state", { workflowId: wf.id, state });
+
+    const upstream = collectUpstream(node.id, wf, state);
+    let count = node.config.loopCount ?? 1;
+    if (node.config.loopExpr) {
+      try { count = evalCondition(node.config.loopExpr, upstream) ? (parseInt(String(evalCondition(node.config.loopExpr, upstream))) || count) : count; } catch { /* keep default */ }
+    }
+
+    const bodyIds = node.config.loopBodyNodeIds ?? [];
+    const bodyNodes = allNodes.filter(n => bodyIds.includes(n.id));
+    let broke = false;
+
+    for (let li = 0; li < count; li++) {
+      if (state.status !== "running") break;
+      if (node.config.breakCondition) {
+        const shouldBreak = evalCondition(node.config.breakCondition, upstream);
+        if (shouldBreak) { broke = true; break; }
+      }
+      for (const bodyNode of bodyNodes) {
+        if (state.status !== "running") break;
+        const bns = state.results[bodyNode.id];
+        if (!bns) continue;
+        bns.status = "running";
+        state.currentStep = bodyNode.id;
+        broadcast("run:state", { workflowId: wf.id, state });
+
+        const bodyUpstream = collectUpstream(bodyNode.id, wf, state);
+        bns.output = await executeAgentNode(bodyNode, bodyUpstream);
+
+        bns.status = "done";
+        bns.iterations = (bns.iterations ?? 0) + 1;
+        broadcast("run:state", { workflowId: wf.id, state });
+      }
+    }
+
+    ns.output = `looped ${count} times${broke ? " (break)" : ""}`;
+    ns.status = "done";
+    ns.iterations = count;
+    broadcast("run:state", { workflowId: wf.id, state });
+    return;
+  }
+
+  // ─── AGENT 节点 ─────────────────────────────
+  ns.status = "running";
+  state.currentStep = node.id;
+  broadcast("run:state", { workflowId: wf.id, state });
+
+  const upstream = collectUpstream(node.id, wf, state);
+  try {
+    ns.output = await executeAgentNode(node, upstream);
+    ns.status = "done";
+  } catch (err) {
+    ns.output = `Error: ${err}`;
+    ns.status = "error";
+  }
+  ns.iterations = (ns.iterations ?? 0) + 1;
+  broadcast("run:state", { workflowId: wf.id, state });
+}
+
+// guard 扩展的绝对路径（在 workflow 扩展目录的兄弟目录）
+let guardExtPath: string | null = null;
+
+function findGuardExtPath(): string {
+  if (guardExtPath) return guardExtPath;
+  // workflow 扩展在 packages/extensions/workflow/，guard 在同级的 wf-agent-guard/
+  const thisDir = path.dirname(new URL(import.meta.url).pathname);
+  const candidate = path.resolve(thisDir, "..", "wf-agent-guard", "dist", "index.js");
+  try {
+    fs.accessSync(candidate);
+    guardExtPath = candidate;
+  } catch {
+    // 尝试从 npm 全局安装找
+    try {
+      const npmRoot = execSync("npm root -g", { encoding: "utf-8" }).trim();
+      const npmCandidate = path.join(npmRoot, "lyu-extension-wf-agent-guard", "dist", "index.js");
+      fs.accessSync(npmCandidate);
+      guardExtPath = npmCandidate;
+    } catch {
+      guardExtPath = ""; // 标记为找不到，不再重试
+    }
+  }
+  return guardExtPath || "";
+}
+
+/** 用独立子进程执行 agent 节点 */
+async function executeAgentNode(node: WorkflowNode, upstream: string): Promise<string> {
+  // 构造 prompt
+  const toolInfo = buildToolInfo(node);
+  const basePrompt = upstream
+    ? `[上游输入(JSON)]\n${upstream}\n\n上游输入是 JSON 数组，每个元素包含 sourceLabel(来源节点名)、sourcePort(来源端口)、output(输出内容)。请根据上游输入完成任务。`
+    : node.config.systemPrompt ?? "请开始工作";
+  const prompt = toolInfo ? `${toolInfo}\n\n${basePrompt}` : basePrompt;
+
+  // 确定可执行命令名
+  let cmdName = "pi";
+  try { execSync("which lyu 2>/dev/null", { stdio: "pipe" }); cmdName = "lyu"; } catch { /* fallback to pi */ }
+
+  // 构造命令行参数
+  const args: string[] = ["--print", "--no-extensions"];
+
+  // 指定 model（如果节点配了）
+  if (node.config.model) {
+    args.push("--model", node.config.model);
+  }
+
+  // 加载 guard 扩展（实现 per-agent 工具隔离）
+  const guardPath = findGuardExtPath();
+  if (guardPath) {
+    args.push("--extension", guardPath);
+  }
+
+  // 添加 prompt
+  args.push(prompt);
+
+  // 构造环境变量（传递工具限制给 guard 扩展）
+  const envExtra: Record<string, string> = {};
+  const whitelist = (node.config.tools as string[] | undefined);
+  const blacklist = (node.config.disabledTools as string[] | undefined);
+  if (whitelist && whitelist.length > 0) envExtra.WORKFLOW_TOOLS_WHITELIST = whitelist.join(",");
+  if (blacklist && blacklist.length > 0) envExtra.WORKFLOW_TOOLS_BLACKLIST = blacklist.join(",");
+
+  return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`Agent ${node.label} timed out (120s)`));
+    }, 120_000);
+
+    execFile(cmdName, args, {
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, ...envExtra },
+    }, (err, stdout, stderr) => {
+      clearTimeout(timeout);
+      if (err) {
+        const output = stdout?.trim() || stderr?.trim() || err.message;
+        resolve(output);
+      } else {
+        resolve(stdout?.trim() || "(no output)");
+      }
+    });
+  });
+}
+
+/** 根据节点工具配置，构造工具约束提示 */
+function buildToolInfo(node: WorkflowNode): string {
+  const parts: string[] = [];
+
+  if (node.config.tools && node.config.tools.length > 0) {
+    parts.push(`[工具白名单] 你只能使用以下工具: ${node.config.tools.join(", ")}. 禁止使用其他任何工具.`);
+  }
+  if (node.config.disabledTools && node.config.disabledTools.length > 0) {
+    parts.push(`[工具黑名单] 你被禁止使用以下工具: ${node.config.disabledTools.join(", ")}.`);
+  }
+  if (node.config.customTools && node.config.customTools.length > 0) {
+    const toolDescs = node.config.customTools.map(t =>
+      `- ${t.name} (${t.type}${t.source ? ` from ${t.source}` : ""}): ${t.description}`
+    ).join("\n");
+    parts.push(`[自定义工具]\n${toolDescs}`);
+  }
+
+  return parts.join("\n\n");
+}
+
+/** 安全地执行条件表达式 */
+function evalCondition(expr: string, input: string): boolean {
+  try {
+    const fn = new Function("$input", `"use strict"; return (${expr});`);
+    const result = fn(input);
+    return !!result;
+  } catch {
+    return false;
+  }
+}
+
 function topoSort(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowNode[] {
+  const layers = topoLayers(nodes, edges);
+  return layers.flat();
+}
+
+/** 拓扑分层：同一层内无相互依赖，可并行执行 */
+function topoLayers(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowNode[][] {
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
   const deg = new Map(nodes.map(n => [n.id, 0]));
   const adj = new Map(nodes.map(n => [n.id, [] as string[]]));
-  for (const e of edges) { adj.get(e.source)?.push(e.target); deg.set(e.target, (deg.get(e.target) ?? 0) + 1); }
-
-  const q: string[] = [];
-  for (const [id, d] of deg) if (d === 0) q.push(id);
-
-  const result: WorkflowNode[] = [];
-  while (q.length) {
-    const id = q.shift()!;
-    const n = nodeMap.get(id);
-    if (n) result.push(n);
-    for (const next of adj.get(id) ?? []) {
-      const d = (deg.get(next) ?? 1) - 1;
-      deg.set(next, d);
-      if (d === 0) q.push(next);
-    }
+  for (const e of edges) {
+    adj.get(e.source)?.push(e.target);
+    deg.set(e.target, (deg.get(e.target) ?? 0) + 1);
   }
-  for (const n of nodes) if (!result.find(r => r.id === n.id)) result.push(n);
-  return result;
+
+  const layers: WorkflowNode[][] = [];
+  let remaining = new Set(nodes.map(n => n.id));
+
+  while (remaining.size > 0) {
+    // 找到所有入度为 0 的节点 → 本层
+    const layer: WorkflowNode[] = [];
+    const ready: string[] = [];
+    for (const id of remaining) {
+      if ((deg.get(id) ?? 0) === 0) ready.push(id);
+    }
+    // 如果没有入度为 0 的节点，说明有环，把剩余节点全放进当前层
+    if (ready.length === 0) {
+      for (const id of remaining) {
+        const n = nodeMap.get(id);
+        if (n) layer.push(n);
+      }
+      if (layer.length > 0) layers.push(layer);
+      break;
+    }
+    for (const id of ready) {
+      const n = nodeMap.get(id);
+      if (n) layer.push(n);
+      remaining.delete(id);
+      // 减少下游入度
+      for (const next of adj.get(id) ?? []) {
+        deg.set(next, (deg.get(next) ?? 1) - 1);
+      }
+    }
+    if (layer.length > 0) layers.push(layer);
+  }
+
+  return layers;
 }
 
 // ─── 启停 ──────────────────────────────────────────────────────────
@@ -368,24 +693,26 @@ function startServer(): Promise<number> {
       const client: WsClient = {
         socket,
         send(data: string) {
-          // 简易：发 text frame (opcode 0x1), 无掩码, 不分片
-          const buf = Buffer.from(data, "utf-8");
-          const len = buf.length;
-          const frames: Buffer[] = [];
-          if (len < 126) {
-            frames.push(Buffer.from([0x81, len]));
-          } else if (len < 65536) {
-            const h = Buffer.alloc(4);
-            h[0] = 0x81; h[1] = 126; h.writeUInt16BE(len, 2);
-            frames.push(h);
-          } else {
-            const h = Buffer.alloc(10);
-            h[0] = 0x81; h[1] = 127;
-            h.writeBigUInt64BE(BigInt(len), 2);
-            frames.push(h);
-          }
-          frames.push(buf);
-          socket.write(Buffer.concat(frames));
+          try {
+            // 简易：发 text frame (opcode 0x1), 无掩码, 不分片
+            const buf = Buffer.from(data, "utf-8");
+            const len = buf.length;
+            const frames: Buffer[] = [];
+            if (len < 126) {
+              frames.push(Buffer.from([0x81, len]));
+            } else if (len < 65536) {
+              const h = Buffer.alloc(4);
+              h[0] = 0x81; h[1] = 126; h.writeUInt16BE(len, 2);
+              frames.push(h);
+            } else {
+              const h = Buffer.alloc(10);
+              h[0] = 0x81; h[1] = 127;
+              h.writeBigUInt64BE(BigInt(len), 2);
+              frames.push(h);
+            }
+            frames.push(buf);
+            socket.write(Buffer.concat(frames));
+          } catch { /* 客户端已断开，忽略 EPIPE 等 */ }
         },
       };
 
@@ -425,6 +752,13 @@ function startServer(): Promise<number> {
       socket.on("close", () => {
         const idx = wsClients.indexOf(client);
         if (idx >= 0) wsClients.splice(idx, 1);
+      });
+
+      // 吞掉网络错误（ECONNRESET / EPIPE 等），避免未捕获异常崩溃
+      socket.on("error", (err: any) => {
+        const idx = wsClients.indexOf(client);
+        if (idx >= 0) wsClients.splice(idx, 1);
+        // 不需要 log，客户端断开是正常行为
       });
 
       // 发送初始状态
@@ -471,7 +805,7 @@ export default function (pi: ExtensionAPI) {
 
         // 打开浏览器
         const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-        try { require("node:child_process").execSync(`${cmd} "${url}"`, { stdio: "ignore" }); } catch { /* ok */ }
+        try { execSync(`${cmd} "${url}"`, { stdio: "ignore" }); } catch { /* ok */ }
 
         pi.sendMessage({
           customType: "workflow",
@@ -482,7 +816,7 @@ export default function (pi: ExtensionAPI) {
       } else {
         const url = `http://127.0.0.1:${port}`;
         const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-        try { require("node:child_process").execSync(`${cmd} "${url}"`, { stdio: "ignore" }); } catch { /* ok */ }
+        try { execSync(`${cmd} "${url}"`, { stdio: "ignore" }); } catch { /* ok */ }
       }
     },
   });
