@@ -237,6 +237,12 @@
           <label>Max Loops</label>
           <input type="number" id="cfgMaxLoops" value="1" min="1" max="100" oninput="updateSelectedNode()" />
 
+          <label style="margin-top:12px">🧩 扩展（每行一个路径）</label>
+          <textarea id="cfgExtensions" oninput="updateSelectedNode()" placeholder="~/my-RTR/extensions/codegraph.ts"></textarea>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+            节点默认以 --no-extensions 隔离运行；这里点名的扩展会被显式加载（例如 codegraph 提供代码图上下文）。
+          </div>
+
           <label style="margin-top:12px">🔧 工具配置</label>
           <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">点击切换: ✓允许 ✕禁用 ○默认</div>
           <div class="tool-tags" id="toolTags"></div>
@@ -489,6 +495,8 @@
         n.config.model = document.getElementById('cfgModel').value;
         n.config.systemPrompt = document.getElementById('cfgPrompt').value;
         n.config.maxLoops = parseInt(document.getElementById('cfgMaxLoops').value) || 1;
+        n.config.extensions = document.getElementById('cfgExtensions').value
+          .split('\n').map(line => line.trim()).filter(Boolean);
         n.config.tools = [];
         n.config.disabledTools = [];
         for (const [tool, state] of Object.entries(toolStates)) {
@@ -674,6 +682,7 @@
         document.getElementById('cfgModel').value = n.config.model || '';
         document.getElementById('cfgPrompt').value = n.config.systemPrompt || '';
         document.getElementById('cfgMaxLoops').value = n.config.maxLoops || 1;
+        document.getElementById('cfgExtensions').value = (n.config.extensions || []).join('\n');
         renderToolTags();
       } else if (n.type === 'if') {
         document.getElementById('cfgConditionOperator').value = n.config.conditionOperator || 'contains';

@@ -55,6 +55,7 @@ interface WorkflowNode {
     tools?: string[];            // 白名单模式：只允许这些工具
     disabledTools?: string[];    // 黑名单模式：禁用这些工具
     customTools?: CustomTool[];  // 通过 extension 注册的自定义工具
+    extensions?: string[];       // 额外加载到本节点子进程的 pi 扩展（路径，支持 ~）
     maxLoops?: number;
     maxTokens?: number;
     // if: declarative condition; legacy JS expressions are rejected
@@ -858,6 +859,38 @@ function findGuardExtPath(): string {
   return candidate;
 }
 
+/**
+ * 节点额外的 pi 扩展。
+ *
+ * 节点子进程是 `--no-extensions` 起的，好处是结果可复现：不会因为本机恰好装了
+ * 什么扩展而改变行为。代价是 codegraph 这类「给 agent 喂上下文」的扩展也进不去，
+ * 于是节点里的 agent 看不见代码图。这里开一个显式白名单：只有点名要的扩展会被
+ * 加上 `--extension`，其余仍然按 `--no-extensions` 隔离。
+ *
+ * 来源有两个，节点自己的配置优先，环境变量作为全局默认：
+ *   - node.config.extensions
+ *   - WORKFLOW_NODE_EXTENSIONS（逗号分隔）
+ * 路径写错直接报错，而不是悄悄少加载一个扩展——静默降级会让人以为上下文生效了。
+ */
+function resolveNodeExtensions(node: WorkflowNode): string[] {
+  const fromEnv = (process.env.WORKFLOW_NODE_EXTENSIONS ?? "")
+    .split(",")
+    .map(entry => entry.trim())
+    .filter(Boolean);
+  const requested = [...(node.config.extensions ?? []), ...fromEnv];
+  const resolved: string[] = [];
+  for (const raw of requested) {
+    const expanded = raw.startsWith("~") ? path.join(os.homedir(), raw.slice(1)) : raw;
+    const absolute = path.isAbsolute(expanded) ? expanded : path.resolve(process.cwd(), expanded);
+    if (resolved.includes(absolute)) continue;
+    if (!fs.existsSync(absolute)) {
+      throw new Error(`节点 ${node.label} 要加载的扩展不存在：${raw}`);
+    }
+    resolved.push(absolute);
+  }
+  return resolved;
+}
+
 /** 用独立子进程执行 agent 节点 */
 async function executeAgentNode(
   node: WorkflowNode,
@@ -885,6 +918,12 @@ async function executeAgentNode(
 
   // 加载 guard 扩展（实现 per-agent 工具隔离）
   args.push("--extension", findGuardExtPath());
+
+  // 节点点名的扩展（codegraph 之类），仍然受 --no-extensions 约束，只放行这些。
+  for (const extensionPath of resolveNodeExtensions(node)) {
+    args.push("--extension", extensionPath);
+    process.stderr.write(`[workflow] ${node.label} +extension ${extensionPath}\n`);
+  }
 
   // 添加 prompt
   args.push(prompt);
