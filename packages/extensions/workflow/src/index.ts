@@ -39,6 +39,15 @@ import * as crypto from "node:crypto";
 import * as os from "node:os";
 import { execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  RUNS_DIR,
+  flushAll as flushRunHistory,
+  listRuns,
+  observeRun,
+  readRun,
+  startRun,
+  type ObservableState,
+} from "./run-history.js";
 
 const DEFAULT_PORT = 18789;
 
@@ -196,6 +205,12 @@ function broadcast(type: string, data: unknown) {
   for (const c of wsClients) {
     try { c.send(msg); } catch { /* ignore */ }
   }
+  // 运行历史：引擎每次状态变化都从这个出口流出去，观察者挂在这里就够了，
+  // 不用在每个分支里埋点（以后加新节点类型也不会漏记）。
+  if (type === "run:state") {
+    const payload = data as { workflowId?: string; state?: ObservableState } | null;
+    if (payload?.workflowId && payload.state) observeRun(payload.workflowId, payload.state);
+  }
 }
 
 // ─── 前端静态文件 ──────────────────────────────────────────────────
@@ -255,6 +270,18 @@ function handleApi(req: http.IncomingMessage, res: http.ServerResponse, urlPath:
     ok([...workflows.values()].map(w => ({ id: w.id, name: w.name, nodeCount: w.nodes.length, globalMaxLoops: w.globalMaxLoops })));
   } else if (urlPath === "/api/status") {
     ok({ ok: true, workflows: workflows.size, clients: wsClients.length, pendingAsks: pendingAsks.size });
+  } else if (urlPath === "/api/runs") {
+    const rawLimit = Number(url.searchParams.get("limit") ?? 20);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
+    ok({ runs: listRuns(limit), dir: RUNS_DIR });
+  } else if (urlPath.startsWith("/api/runs/")) {
+    const run = readRun(decodeURIComponent(urlPath.slice("/api/runs/".length)));
+    if (!run) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "no such run" }));
+      return;
+    }
+    ok(run);
   } else if (urlPath === "/api/ask") {
     void handleAsk(req, res, url);
   } else {
@@ -476,6 +503,14 @@ function handleWsMessage(raw: string) {
       runControllers.set(wfId, controller);
       runTokens.set(wfId, crypto.randomBytes(16).toString("hex"));
       for (const n of wf.nodes) state.results[n.id] = { status: "pending" };
+      startRun({
+        runId: crypto.randomUUID(),
+        workflowId: wfId,
+        workflowName: wf.name,
+        input,
+        nodeLabels: Object.fromEntries(wf.nodes.map(n => [n.id, n.label])),
+        workflowSnapshot: wf,
+      });
       broadcast("run:state", { workflowId: wfId, state });
 
       runWorkflow(wf, state, input, controller.signal).catch(err => {
@@ -1180,7 +1215,14 @@ function stopServer() {
   runTokens.clear();
   for (const controller of runControllers.values()) controller.abort();
   runControllers.clear();
-  for (const state of runStates.values()) if (state.status === "running" || state.status === "paused") state.status = "idle";
+  for (const [wfId, state] of runStates) {
+    if (state.status === "running" || state.status === "paused") {
+      state.status = "idle";
+      // 服务关停等于这次运行结束了：先把终态喂给历史，再收尾落盘。
+      observeRun(wfId, state);
+    }
+  }
+  flushRunHistory();
   for (const c of wsClients) try { c.socket.destroy(); } catch { /* ok */ }
   wsClients.length = 0;
   server?.close();
@@ -1257,6 +1299,49 @@ export default function (pi: ExtensionAPI) {
         stopServer();
         if (owned) clearPortFile();
         pi.sendMessage({ customType: "workflow", content: "Workflow server stopped", display: true });
+        return;
+      }
+
+      // /workflow runs [n] —— 看最近几次运行；/workflow show <runId> —— 看一次运行里每个节点干了什么。
+      // 运行历史落在 ~/.pi/agent/workflow-runs/，服务重启也在。
+      if (args.trim().startsWith("runs") || args.trim().startsWith("show")) {
+        const [sub, rest] = args.trim().split(/\s+/);
+        if (sub === "runs") {
+          const limit = Number(rest) > 0 ? Math.min(Number(rest), 100) : 10;
+          const runs = listRuns(limit);
+          const content = !runs.length
+            ? `还没有运行历史（${RUNS_DIR}）`
+            : runs
+                .map(run => {
+                  const when = new Date(run.startedAt).toLocaleString("zh-CN");
+                  const cost = run.durationMs ? `${(run.durationMs / 1000).toFixed(1)}s` : "进行中";
+                  const failed = run.failedNodes.length ? ` 失败节点: ${run.failedNodes.join(", ")}` : "";
+                  return `${when}  ${run.status.padEnd(7)} ${cost.padEnd(7)} ${run.workflowName ?? run.workflowId}  ${run.runId}${failed}`;
+                })
+                .join("\n");
+          pi.sendMessage({ customType: "workflow", content, display: true });
+          return;
+        }
+        const run = rest ? readRun(rest) : null;
+        if (!run) {
+          pi.sendMessage({ customType: "workflow", content: `没有这次运行：${rest ?? "(缺少 runId)"}`, display: true });
+          return;
+        }
+        const lines = [
+          `${run.workflowName ?? run.workflowId}  ${run.status}  ${new Date(run.startedAt).toLocaleString("zh-CN")}`,
+          `输入: ${run.input.slice(0, 200)}`,
+        ];
+        for (const [nodeId, node] of Object.entries(run.nodes)) {
+          const label = run.nodeLabels[nodeId] ?? nodeId;
+          const cost = node.durationMs ? `${(node.durationMs / 1000).toFixed(1)}s` : "-";
+          lines.push(`• ${label}: ${node.status} ${cost}${node.error ? ` — ${node.error.slice(0, 120)}` : ""}`);
+          if (node.asks?.length) {
+            for (const ask of node.asks) lines.push(`    问: ${ask.question.slice(0, 100)} → ${ask.answer.slice(0, 100)}`);
+          }
+        }
+        if (run.finalOutput) lines.push(`输出: ${run.finalOutput.slice(0, 400)}`);
+        if (run.error) lines.push(`错误: ${run.error}`);
+        pi.sendMessage({ customType: "workflow", content: lines.join("\n"), display: true });
         return;
       }
 

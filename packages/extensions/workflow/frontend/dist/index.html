@@ -198,6 +198,7 @@
         <button class="btn" onclick="addNode('output')">◎ Output</button>
         <button class="btn" onclick="saveWorkflow()">保存</button>
         <button class="btn" onclick="loadWorkflow()">读取</button>
+        <button class="btn" onclick="openHistory()">🕘 历史</button>
         <button class="btn primary" id="runBtn" onclick="runWorkflow()">▶ Run</button>
         <button class="btn" onclick="stopWorkflow()">■ Stop</button>
         <button class="btn danger" onclick="clearAll()">✕ Clear</button>
@@ -312,6 +313,18 @@
       <div class="run-log" id="runLog">
         <div class="entry" style="color:var(--text-muted)">Ready.</div>
       </div>
+    </div>
+  </div>
+
+  <!-- 运行历史 -->
+  <div class="dialog-overlay" id="historyDialog" style="display:none" onclick="if(event.target===this)closeHistory()">
+    <div class="dialog" style="width:min(820px,92vw)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <h3 style="margin:0">运行历史</h3>
+        <span style="color:var(--text-muted);font-size:11px">存在 ~/.pi/agent/workflow-runs/，重启也在</span>
+        <button class="btn" style="margin-left:auto" onclick="closeHistory()">关闭</button>
+      </div>
+      <div id="historyList" style="max-height:56vh;overflow:auto"></div>
     </div>
   </div>
 
@@ -841,6 +854,80 @@
         createdAt: workflowCreatedAt, updatedAt: Date.now()
       };
     }
+    // ─── 运行历史 ─────────────────────────────────────────────
+    function closeHistory() {
+      document.getElementById('historyDialog').style.display = 'none';
+    }
+
+    async function openHistory() {
+      document.getElementById('historyDialog').style.display = 'flex';
+      await renderHistory();
+    }
+
+    async function renderHistory() {
+      const box = document.getElementById('historyList');
+      box.innerHTML = '<div style="color:var(--text-muted);font-size:12px">加载中…</div>';
+      try {
+        const res = await fetch('/api/runs?limit=30');
+        const data = await res.json();
+        const runs = data.runs || [];
+        if (!runs.length) {
+          box.innerHTML = '<div style="color:var(--text-muted);font-size:12px">还没有运行记录</div>';
+          return;
+        }
+        box.innerHTML = runs.map(r => {
+          const color = r.status === 'done' ? 'var(--success, #3fb950)'
+            : r.status === 'error' ? 'var(--danger, #f85149)' : 'var(--text-muted)';
+          const when = new Date(r.startedAt).toLocaleString('zh-CN');
+          const cost = r.durationMs ? (r.durationMs / 1000).toFixed(1) + 's' : '进行中';
+          const failed = (r.failedNodes || []).length
+            ? ` <span style="color:var(--danger, #f85149)">失败: ${escapeHTML(r.failedNodes.join(', '))}</span>` : '';
+          return `<div style="border:1px solid var(--border, #30363d);border-radius:6px;padding:8px;margin-bottom:6px;cursor:pointer"
+                    onclick="toggleRunDetail(this, '${r.runId}')">
+            <div style="display:flex;gap:8px;font-size:12px;align-items:center">
+              <span style="color:${color};font-weight:600;min-width:52px">${escapeHTML(r.status)}</span>
+              <span style="color:var(--text-muted)">${when}</span>
+              <span style="color:var(--text-muted)">${cost}</span>
+              <span style="flex:1">${escapeHTML(r.workflowName || r.workflowId)}</span>${failed}
+            </div>
+            ${r.error ? `<div style="font-size:11px;color:var(--danger, #f85149);margin-top:4px">${escapeHTML(String(r.error).slice(0, 200))}</div>` : ''}
+            <div class="run-detail" style="display:none;margin-top:8px;font-size:11px"></div>
+          </div>`;
+        }).join('');
+      } catch (err) {
+        box.innerHTML = `<div style="color:var(--danger, #f85149);font-size:12px">读取历史失败：${escapeHTML(String(err))}</div>`;
+      }
+    }
+
+    async function toggleRunDetail(row, runId) {
+      const detail = row.querySelector('.run-detail');
+      if (detail.style.display !== 'none') { detail.style.display = 'none'; return; }
+      detail.style.display = 'block';
+      if (detail.dataset.loaded) return;
+      detail.textContent = '加载中…';
+      try {
+        const res = await fetch('/api/runs/' + encodeURIComponent(runId));
+        const run = await res.json();
+        if (run.error === 'no such run') { detail.textContent = '没有这次运行'; return; }
+        const rows = Object.entries(run.nodes || {}).map(([nodeId, node]) => {
+          const label = (run.nodeLabels || {})[nodeId] || nodeId;
+          const cost = node.durationMs ? (node.durationMs / 1000).toFixed(1) + 's' : '-';
+          const asks = (node.asks || []).map(a =>
+            `<div style="color:var(--text-muted)">问: ${escapeHTML((a.question || '').slice(0, 90))} → ${escapeHTML((a.answer || '').slice(0, 90))}</div>`).join('');
+          return `<div style="margin-bottom:6px">
+            <div><b>${escapeHTML(label)}</b> <span style="color:var(--text-muted)">${escapeHTML(node.status)} ${cost}</span></div>
+            ${node.error ? `<div style="color:var(--danger, #f85149)">${escapeHTML(String(node.error).slice(0, 200))}</div>` : ''}
+            ${asks}
+            ${node.output ? `<div style="color:var(--text-muted);white-space:pre-wrap;max-height:80px;overflow:auto">${escapeHTML(String(node.output).slice(0, 400))}</div>` : ''}
+          </div>`;
+        }).join('');
+        detail.innerHTML = rows || '<div style="color:var(--text-muted)">没有节点记录</div>';
+        detail.dataset.loaded = '1';
+      } catch (err) {
+        detail.textContent = '读取失败：' + err;
+      }
+    }
+
     function saveWorkflow() {
       send('workflow:save', { workflow: workflowSnapshot() });
     }
