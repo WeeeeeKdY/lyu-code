@@ -889,6 +889,8 @@
               <span style="color:var(--text-muted)">${when}</span>
               <span style="color:var(--text-muted)">${cost}</span>
               <span style="flex:1">${escapeHTML(r.workflowName || r.workflowId)}</span>${failed}
+              ${r.status === 'error' ? `<button class="btn" style="font-size:11px;padding:2px 6px"
+                onclick="event.stopPropagation(); resumeRun('${r.runId}')">↻ 重试</button>` : ''}
             </div>
             ${r.error ? `<div style="font-size:11px;color:var(--danger, #f85149);margin-top:4px">${escapeHTML(String(r.error).slice(0, 200))}</div>` : ''}
             <div class="run-detail" style="display:none;margin-top:8px;font-size:11px"></div>
@@ -897,6 +899,13 @@
       } catch (err) {
         box.innerHTML = `<div style="color:var(--danger, #f85149);font-size:12px">读取历史失败：${escapeHTML(String(err))}</div>`;
       }
+    }
+
+    // 从失败节点往后重算：上游已成功的节点直接沿用上次输出。
+    function resumeRun(runId) {
+      send('workflow:resume', { runId });
+      closeHistory();
+      log('已从失败的节点续跑', 'success');
     }
 
     async function toggleRunDetail(row, runId) {

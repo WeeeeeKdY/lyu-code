@@ -498,10 +498,6 @@ function handleWsMessage(raw: string) {
       if (!input) throw new Error("请输入本次运行的用户输入");
       cancelAsksFor(wfId); // 清掉上一次运行残留的悬挂提问
       const state: RunState = { status: "running", iteration: 0, results: {}, pendingAsks: [] };
-      const controller = new AbortController();
-      runStates.set(wfId, state);
-      runControllers.set(wfId, controller);
-      runTokens.set(wfId, crypto.randomBytes(16).toString("hex"));
       for (const n of wf.nodes) state.results[n.id] = { status: "pending" };
       startRun({
         runId: crypto.randomUUID(),
@@ -511,18 +507,65 @@ function handleWsMessage(raw: string) {
         nodeLabels: Object.fromEntries(wf.nodes.map(n => [n.id, n.label])),
         workflowSnapshot: wf,
       });
-      broadcast("run:state", { workflowId: wfId, state });
+      launchRun(wf, state, input);
+      break;
+    }
 
-      runWorkflow(wf, state, input, controller.signal).catch(err => {
-        if (controller.signal.aborted || !isRunLive(state)) return;
-        state.status = "error";
-        state.error = String(err);
-        controller.abort(); // 一个节点失败时终止同层仍在运行的 Agent。
-        broadcast("run:state", { workflowId: wfId, state });
-      }).finally(() => {
-        if (runControllers.get(wfId) === controller) runControllers.delete(wfId);
-        runTokens.delete(wfId);
+    // 续跑/重试：把历史里已成功的节点填回去，从出错节点（或指定节点）往后重算。
+    case "workflow:resume": {
+      const record = readRun(String(msg.data?.runId ?? ""));
+      if (!record) throw new Error("找不到这次运行记录");
+      if (runStates.get(record.workflowId)?.status === "running") {
+        throw new Error("这个工作流正在运行，先停止再重试");
+      }
+
+      // 定义优先用内存里的（用户可能改过），没有就用运行时的快照重建。
+      let wf = workflows.get(record.workflowId);
+      if (!wf) {
+        const snapshot = record.workflowSnapshot as Workflow | undefined;
+        if (!snapshot?.nodes || !Array.isArray(snapshot.edges)) {
+          throw new Error("运行记录里没有工作流定义，无法重试");
+        }
+        wf = snapshot;
+        workflows.set(wf.id, wf);
+        broadcast("workflow:created", wf);
+      }
+      validateWorkflow(wf);
+
+      const requested = msg.data?.nodeId ? String(msg.data.nodeId) : undefined;
+      const startNodeId = requested
+        ?? record.currentStep
+        ?? Object.keys(record.nodes).find(id => record.nodes[id]?.status === "error")
+        ?? Object.keys(record.nodes).find(id => record.nodes[id]?.status !== "done");
+      if (!startNodeId || !wf.nodes.some(n => n.id === startNodeId)) {
+        throw new Error("不知道该从哪个节点重试");
+      }
+
+      const replay = downstreamOf(wf, startNodeId);
+      const state: RunState = { status: "running", iteration: 0, results: {}, pendingAsks: [] };
+      for (const node of wf.nodes) {
+        const saved = record.nodes[node.id];
+        const reuse = saved && !replay.has(node.id) && (saved.status === "done" || saved.status === "skipped");
+        state.results[node.id] = reuse
+          ? {
+              status: saved.status === "skipped" ? "skipped" : "done",
+              output: saved.output,
+              iterations: saved.iterations,
+            }
+          : { status: "pending" };
+      }
+
+      cancelAsksFor(wf.id);
+      startRun({
+        runId: crypto.randomUUID(),
+        workflowId: wf.id,
+        workflowName: wf.name,
+        input: record.input,
+        nodeLabels: Object.fromEntries(wf.nodes.map(n => [n.id, n.label])),
+        workflowSnapshot: wf,
+        resumedFrom: record.runId,
       });
+      launchRun(wf, state, record.input);
       break;
     }
 
@@ -688,6 +731,44 @@ function sourceOutput(edge: WorkflowEdge, wf: Workflow, state: RunState): string
 /** paused 只是"编排在等用户回答"，不等于停止；只有 idle/error/done 才是真的不跑了 */
 function isRunLive(state: RunState): boolean {
   return state.status === "running" || state.status === "paused";
+}
+
+/**
+ * 从某个节点出发、沿边能到达的所有节点（含自己）。
+ * 续跑时要重算的就是这些：上游已经成功的节点沿用上次的输出，不重复花钱。
+ */
+function downstreamOf(wf: Workflow, nodeId: string): Set<string> {
+  const seen = new Set<string>([nodeId]);
+  const queue = [nodeId];
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const edge of wf.edges) {
+      if (edge.source !== current || seen.has(edge.target)) continue;
+      seen.add(edge.target);
+      queue.push(edge.target);
+    }
+  }
+  return seen;
+}
+
+/** 起一次运行：登记 state/abort/token，广播首帧，接上错误处理。首次运行与续跑共用。 */
+function launchRun(wf: Workflow, state: RunState, input: string): void {
+  const controller = new AbortController();
+  runStates.set(wf.id, state);
+  runControllers.set(wf.id, controller);
+  runTokens.set(wf.id, crypto.randomBytes(16).toString("hex"));
+  broadcast("run:state", { workflowId: wf.id, state });
+
+  runWorkflow(wf, state, input, controller.signal).catch(err => {
+    if (controller.signal.aborted || !isRunLive(state)) return;
+    state.status = "error";
+    state.error = String(err);
+    controller.abort(); // 一个节点失败时终止同层仍在运行的 Agent。
+    broadcast("run:state", { workflowId: wf.id, state });
+  }).finally(() => {
+    if (runControllers.get(wf.id) === controller) runControllers.delete(wf.id);
+    runTokens.delete(wf.id);
+  });
 }
 
 async function runWorkflow(wf: Workflow, state: RunState, input: string, signal: AbortSignal): Promise<void> {

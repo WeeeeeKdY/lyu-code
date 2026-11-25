@@ -53,6 +53,8 @@ export interface RunRecord {
   /** 出错时正在跑哪个节点：引擎把错误记在 run 上，不往节点里写，
    *  不补这一步就分不清「哪个节点挂了」，重试也就无从下手。 */
   currentStep?: string;
+  /** 这次是从哪一次运行续跑出来的（重试链）。 */
+  resumedFrom?: string;
   nodeLabels: Record<string, string>;
   nodes: Record<string, RunNodeRecord>;
   /** 运行当时的定义快照：复盘时要看的是「当时那个版本」，不是现在磁盘上的。 */
@@ -158,6 +160,7 @@ export function startRun(params: {
   input: string;
   nodeLabels: Record<string, string>;
   workflowSnapshot?: unknown;
+  resumedFrom?: string;
 }): string {
   const now = Date.now();
   const entry: ActiveRun = {
@@ -172,6 +175,7 @@ export function startRun(params: {
       nodeLabels: params.nodeLabels,
       nodes: {},
       workflowSnapshot: params.workflowSnapshot,
+      resumedFrom: params.resumedFrom,
     },
     timer: null,
     dirty: false,
