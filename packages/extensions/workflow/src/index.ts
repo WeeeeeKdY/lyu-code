@@ -134,7 +134,7 @@ interface AskAnswer {
 }
 
 interface RunState {
-  status: "idle" | "running" | "paused" | "error" | "done";
+  status: "idle" | "queued" | "running" | "paused" | "error" | "done";
   currentStep?: string;
   finalOutput?: string;
   error?: string;
@@ -169,6 +169,39 @@ let piRef: ExtensionAPI | null = null;
 const workflows = new Map<string, Workflow>();
 const runStates = new Map<string, RunState>();
 const runControllers = new Map<string, AbortController>();
+
+/**
+ * 并发上限与等待队列。
+ *
+ * 每个 workflow 各有自己的 RunState，本来就能并行；但没有上限时「连点五个运行」
+ * 会同时拉起一堆 agent 子进程，谁也看不清进度，机器也可能被打满。超过上限的
+ * 明确标成 queued 排进队列，等有运行结束时按顺序放行 —— 状态是用户看得见的，
+ * 而不是静默丢弃。
+ */
+const MAX_CONCURRENT_RUNS = Math.max(1, Number(process.env.WORKFLOW_MAX_CONCURRENT ?? 3) || 3);
+interface QueuedRun { wf: Workflow; state: RunState; input: string }
+const runQueue: QueuedRun[] = [];
+
+/**
+ * 已占用的槽位数。
+ *
+ * 不能用「扫 runStates 里 status 是 running 的个数」来算：launchRun 把状态改成
+ * running 之后，自己就会被数进去，于是永远判断成超限，再把同一个任务重新入队，
+ * 死循环直到 OOM（真踩过）。槽位必须是显式计数。
+ */
+let activeRuns = 0;
+
+function activeRunCount(): number {
+  return activeRuns;
+}
+
+/** 有空位就把队头的放进来。launchRun 会自己加槽位，所以这里不预占。 */
+function drainRunQueue(): void {
+  while (runQueue.length && activeRuns < MAX_CONCURRENT_RUNS) {
+    const job = runQueue.shift()!;
+    launchRun(job.wf, job.state, job.input);
+  }
+}
 const wsClients: WsClient[] = [];
 const registeredCustomTools = new Map<string, CustomTool>();
 const savedWorkflowDir = path.join(os.homedir(), ".pi", "agent", "workflows");
@@ -601,7 +634,19 @@ function handleWsMessage(raw: string) {
     case "workflow:run": {
       const wfId = msg.data?.workflowId;
       const wf = workflows.get(wfId);
-      if (!wf || runStates.get(wfId)?.status === "running") break;
+      // 以前这里直接 break：点「运行」没反应，用户只能猜。现在说清楚为什么没跑。
+      if (!wf) {
+        broadcast("workflow:error", { message: "找不到这个工作流（可能已被删除或尚未保存）" });
+        break;
+      }
+      if (runStates.get(wfId)?.status === "running") {
+        broadcast("workflow:error", { message: "这个工作流正在运行，等它结束或先停止" });
+        break;
+      }
+      if (runStates.get(wfId)?.status === "paused") {
+        broadcast("workflow:error", { message: "这个工作流正卡在提问上：先在页面上或 /workflow ask 里回答，或停止后再重跑" });
+        break;
+      }
 
       validateWorkflow(wf);
       const input = String(msg.data?.input ?? "").trim();
@@ -686,6 +731,8 @@ function handleWsMessage(raw: string) {
       runControllers.get(wfId)?.abort();
       runControllers.delete(wfId);
       runTokens.delete(wfId);
+      const queuedAt = runQueue.findIndex(job => job.wf.id === wfId);
+      if (queuedAt >= 0) runQueue.splice(queuedAt, 1);   // 排队中的也要能撤掉
       if (state) { state.status = "idle"; state.pendingAsks = []; broadcast("run:state", { workflowId: wfId, state }); }
       break;
     }
@@ -863,6 +910,18 @@ function downstreamOf(wf: Workflow, nodeId: string): Set<string> {
 
 /** 起一次运行：登记 state/abort/token，广播首帧，接上错误处理。首次运行与续跑共用。 */
 function launchRun(wf: Workflow, state: RunState, input: string): void {
+  // 已经到并发上限：排队，别把状态显示成 running 骗人。
+  if (activeRuns >= MAX_CONCURRENT_RUNS) {
+    state.status = "queued";
+    runStates.set(wf.id, state);
+    runQueue.push({ wf, state, input });
+    broadcast("run:state", { workflowId: wf.id, state });
+    process.stderr.write(`[workflow] ${wf.name} 排队中（已有 ${activeRuns} 个在跑）\n`);
+    return;
+  }
+
+  activeRuns++;
+  state.status = "running";
   const controller = new AbortController();
   runStates.set(wf.id, state);
   runControllers.set(wf.id, controller);
@@ -880,6 +939,8 @@ function launchRun(wf: Workflow, state: RunState, input: string): void {
     if (runControllers.get(wf.id) === controller) runControllers.delete(wf.id);
     runTokens.delete(wf.id);
     clearProgress(wf.id);
+    activeRuns = Math.max(0, activeRuns - 1);
+    drainRunQueue();   // 腾出位置给排队的
   });
 }
 
