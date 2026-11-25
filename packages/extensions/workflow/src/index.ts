@@ -178,6 +178,7 @@ const runTokens = new Map<string, string>();
 // askId -> 在途的长轮询请求
 const pendingAsks = new Map<string, PendingAsk>();
 
+const STREAM_THROTTLE_MS = 200;
 const ASK_TIMEOUT_MS = Number(process.env.WORKFLOW_ASK_TIMEOUT_MS) || 10 * 60_000;
 // 单个 agent 节点的硬上限；等待用户回答时子进程本身不设超时
 const NODE_TIMEOUT_MS = Number(process.env.WORKFLOW_NODE_TIMEOUT_MS) || 60 * 60_000;
@@ -285,6 +286,8 @@ function handleApi(req: http.IncomingMessage, res: http.ServerResponse, urlPath:
     ok(run);
   } else if (urlPath === "/api/ask") {
     void handleAsk(req, res, url);
+  } else if (urlPath === "/api/progress") {
+    void handleProgress(req, res, url);
   } else if (urlPath === "/api/pending" || urlPath === "/api/answer") {
     void handleAskBridge(req, res, urlPath === "/api/answer");
   } else {
@@ -345,6 +348,59 @@ function cancelAsksFor(workflowId: string, answer: AskAnswer = { cancelled: true
   for (const ask of [...pendingAsks.values()]) {
     if (ask.workflowId === workflowId) settleAsk(ask, answer);
   }
+}
+
+/**
+ * 节点进度缓冲：wfId → nodeId → 最近若干行。
+ *
+ * 为什么需要它：`lyu --print` 把整段回复攒到最后一次打印，节点 stdout 在跑的过程中
+ * 是空的，页面上只能看到整体 RUNNING。真正的过程信号来自节点里的 guard 扩展上报的
+ * 工具调用（见 wf-agent-guard 的 registerProgress）。
+ */
+const progressLines = new Map<string, Map<string, string[]>>();
+const MAX_PROGRESS_LINES = 40;
+
+function clearProgress(wfId: string) {
+  progressLines.delete(wfId);
+}
+
+async function handleProgress(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+  const wfId = url.searchParams.get("wf") ?? "";
+  const token = url.searchParams.get("token") ?? "";
+  // 进度是锦上添花，鉴权失败直接吞掉，不要给子进程任何错误反馈让它分心。
+  if (!wfId || !token || token !== runTokens.get(wfId) || !runStates.has(wfId)) {
+    res.writeHead(204).end();
+    return;
+  }
+
+  let body: { line?: string };
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    res.writeHead(204).end();
+    return;
+  }
+  const line = String(body.line ?? "").slice(0, 400);
+  const nodeId = url.searchParams.get("node") ?? "";
+  if (!line || !nodeId) {
+    res.writeHead(204).end();
+    return;
+  }
+
+  let perRun = progressLines.get(wfId);
+  if (!perRun) { perRun = new Map(); progressLines.set(wfId, perRun); }
+  const lines = perRun.get(nodeId) ?? [];
+  lines.push(`${new Date().toLocaleTimeString("zh-CN", { hour12: false })} ${line}`);
+  if (lines.length > MAX_PROGRESS_LINES) lines.splice(0, lines.length - MAX_PROGRESS_LINES);
+  perRun.set(nodeId, lines);
+
+  broadcast("run:nodeOutput", {
+    workflowId: wfId,
+    nodeId,
+    nodeLabel: url.searchParams.get("label") ?? nodeId,
+    tail: lines.join("\n"),
+  });
+  res.writeHead(204).end();
 }
 
 /**
@@ -811,6 +867,7 @@ function launchRun(wf: Workflow, state: RunState, input: string): void {
   runStates.set(wf.id, state);
   runControllers.set(wf.id, controller);
   runTokens.set(wf.id, crypto.randomBytes(16).toString("hex"));
+  clearProgress(wf.id);   // 新一轮的进度不要接着上一轮的尾巴
   broadcast("run:state", { workflowId: wf.id, state });
 
   runWorkflow(wf, state, input, controller.signal).catch(err => {
@@ -822,6 +879,7 @@ function launchRun(wf: Workflow, state: RunState, input: string): void {
   }).finally(() => {
     if (runControllers.get(wf.id) === controller) runControllers.delete(wf.id);
     runTokens.delete(wf.id);
+    clearProgress(wf.id);
   });
 }
 
@@ -1210,6 +1268,9 @@ async function executeAgentNode(
   if (runCtx && runToken) {
     envExtra.WORKFLOW_ASK_URL =
       `http://127.0.0.1:${port}/api/ask?wf=${encodeURIComponent(runCtx.workflowId)}&token=${runToken}`;
+    envExtra.WORKFLOW_PROGRESS_URL =
+      `http://127.0.0.1:${port}/api/progress?wf=${encodeURIComponent(runCtx.workflowId)}&token=${runToken}` +
+      `&node=${encodeURIComponent(node.id)}&label=${encodeURIComponent(node.label)}`;
     envExtra.WORKFLOW_NODE_ID = node.id;
     envExtra.WORKFLOW_NODE_LABEL = node.label;
     if (runCtx.iteration !== undefined) envExtra.WORKFLOW_ITERATION = String(runCtx.iteration);
@@ -1242,8 +1303,24 @@ async function executeAgentNode(
       else signal.addEventListener("abort", onAbort, { once: true });
     }
 
+    // 节点级流式：长节点（上限 60 分钟）在跑的时候，界面上只有整体 IDLE/RUNNING，
+    // 分不清是在干活还是卡住了。这里把 stdout 的尾部快照推给页面：推的是「尾部」
+    // 而不是增量，丢一帧无害，重连也能立刻看到现状。
+    let streamTimer: NodeJS.Timeout | null = null;
+    const streamOutput = () => {
+      streamTimer = null;
+      const workflowId = runCtx?.workflowId;
+      if (!workflowId || !stdout) return;
+      broadcast("run:nodeOutput", {
+        workflowId,
+        nodeId: node.id,
+        nodeLabel: node.label,
+        tail: stdout.slice(-4000),
+      });
+    };
     child.stdout!.on("data", (chunk: Buffer) => {
       if (stdout.length < MAX_OUT) stdout += chunk.toString("utf-8");
+      if (!streamTimer) streamTimer = setTimeout(streamOutput, STREAM_THROTTLE_MS);
     });
     child.stderr!.on("data", (chunk: Buffer) => {
       if (stderr.length < MAX_OUT) stderr += chunk.toString("utf-8");
@@ -1255,6 +1332,7 @@ async function executeAgentNode(
 
     child.on("close", (code) => {
       signal?.removeEventListener("abort", onAbort);
+      if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
       if (code === 0) finish(() => resolve(stdout.trim()));
       else finish(() => reject(new Error(`Agent ${node.label} 执行失败 (exit ${code}): ${(stderr || stdout).trim().slice(0, 1500)}`)));
     });

@@ -311,6 +311,8 @@
       <select id="savedWorkflows" aria-label="已保存的工作流"><option value="">选择工作流...</option></select>
       <h3 style="margin-top:12px">最终结果</h3>
       <div id="finalOutput" class="result-box">运行完成后显示在这里</div>
+      <h3 id="liveHeading" style="margin-top:14px;display:none">节点实时输出</h3>
+      <pre id="liveOutput" class="result-box" style="display:none;max-height:160px;overflow:auto;white-space:pre-wrap;font-size:11px"></pre>
       <h3 style="margin-top:14px">Run Log</h3>
       <div style="margin-bottom:8px">
         <span style="color:var(--text-muted);font-size:11px">Iteration:</span>
@@ -449,6 +451,17 @@
         case 'run:state':
           updateRunState(msg.data);
           break;
+        case 'run:nodeOutput': {
+          // 「尾部快照」语义：直接替换，不做拼接，丢帧也不会错位。
+          const box = document.getElementById('liveOutput');
+          if (box) {
+            document.getElementById('liveHeading').style.display = 'block';
+            box.style.display = 'block';
+            box.textContent = `[${msg.data.nodeLabel}]\n${msg.data.tail}`;
+            box.scrollTop = box.scrollHeight;
+          }
+          break;
+        }
         case 'run:nodeResult':
           log(`✓ ${msg.data.nodeId}: ${String(msg.data.output).slice(0, 80)}…`, 'success');
           break;
@@ -957,6 +970,8 @@
       const input = document.getElementById('runInput').value.trim();
       if (!input) { log('请填写本次输入', 'error'); return; }
       document.getElementById('finalOutput').textContent = '正在运行…';
+      document.getElementById('liveOutput').style.display = 'none';
+      document.getElementById('liveHeading').style.display = 'none';
       send('workflow:create', workflowSnapshot());
       send('workflow:run', { workflowId: currentWfId(), input });
       log('▶ Workflow started', 'success');

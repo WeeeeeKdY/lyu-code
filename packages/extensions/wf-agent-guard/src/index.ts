@@ -6,7 +6,11 @@
  * 职责：
  *   1. 读取 WORKFLOW_TOOLS_WHITELIST / WORKFLOW_TOOLS_BLACKLIST，
  *      在 agent 启动前通过 setActiveTools() 真正限制可用工具集。
- *   2. 若存在 WORKFLOW_ASK_URL（由 workflow 引擎注入），注册 ask_user 工具：
+ *   2. 若存在 WORKFLOW_PROGRESS_URL，把每次工具调用回报给宿主进程。
+ *      `lyu --print` 是把整段回复攒在最后一次性打印的（实测首个字节在 8.8s、只有 1 个
+ *      chunk），所以光看子进程 stdout 根本拿不到「节点正在干什么」。工具调用是唯一
+ *      可靠的过程信号，它就发生在这个扩展里。
+ *   3. 若存在 WORKFLOW_ASK_URL（由 workflow 引擎注入），注册 ask_user 工具：
  *      它向宿主进程的 /api/ask 长轮询，把问题发到浏览器 UI，并阻塞等待用户回答。
  *      这样节点 agent 可以在执行中途真正"问人"，而不是把问题当输出文本吐出来。
  *
@@ -104,13 +108,47 @@ function registerAskTool(pi: ExtensionAPI, askUrl: string) {
   });
 }
 
+/**
+ * 一行摘要：工具调用里最能说明「在干什么」的那个字段。
+ * 太长的一律截断，进度是给人扫一眼的，不是审计日志。
+ */
+function summarizeToolCall(toolName: string, input: Record<string, unknown>): string {
+  const clip = (value: unknown, max = 120) => {
+    const text = String(value ?? "").replace(/\s+/g, " ").trim();
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  };
+  if (toolName === "bash") return `$ ${clip(input.command)}`;
+  if (toolName === "read" || toolName === "write" || toolName === "edit") return `${toolName} ${clip(input.path)}`;
+  if (toolName === "grep" || toolName === "find") return `${toolName} ${clip(input.pattern ?? input.path)}`;
+  const hint = input.path ?? input.pattern ?? input.command ?? input.query;
+  return hint === undefined ? toolName : `${toolName} ${clip(hint)}`;
+}
+
+/** 工具调用 → 宿主 /api/progress。fire-and-forget：进度报不上去不能影响节点执行。 */
+function registerProgress(pi: ExtensionAPI, progressUrl: string): void {
+  pi.on("tool_call", (event) => {
+    const line = summarizeToolCall(event.toolName, (event.input ?? {}) as Record<string, unknown>);
+    void fetch(progressUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ line }),
+      signal: AbortSignal.timeout(1500),
+    }).catch(() => { /* 宿主没起来或已结束，忽略 */ });
+    return undefined;
+  });
+}
+
 const wfAgentGuardExtension: ExtensionFactory = (pi) => {
   const askUrl = process.env.WORKFLOW_ASK_URL?.trim();
+  const progressUrl = process.env.WORKFLOW_PROGRESS_URL?.trim();
   const whitelist = process.env.WORKFLOW_TOOLS_WHITELIST?.trim();
   const blacklist = process.env.WORKFLOW_TOOLS_BLACKLIST?.trim();
 
   // 提问通道：只要有地址就注册（不受工具限制影响）
   if (askUrl) registerAskTool(pi, askUrl);
+
+  // 进度通道：只上报，不阻塞、不失败，报不上去就算了
+  if (progressUrl) registerProgress(pi, progressUrl);
 
   if (!whitelist && !blacklist) {
     // 没有工具限制，跳过
