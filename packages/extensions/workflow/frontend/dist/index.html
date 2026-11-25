@@ -371,7 +371,10 @@
   </div>
 
   <script>
-    // ─── State ──────────────────────────────────────────    let ws = null;
+    // ─── State ──────────────────────────────────────────    // 开了令牌门禁时，/workflow 打开的是 ?token=xxx；页面把令牌带在每条请求上。
+    const AUTH_TOKEN = new URLSearchParams(location.search).get('token') || '';
+    const authHeaders = () => (AUTH_TOKEN ? { 'x-workflow-token': AUTH_TOKEN } : {});
+    let ws = null;
     let nodes = [];
     let edges = [];
     let selectedNodeId = null;
@@ -390,7 +393,7 @@
     function connectWS() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       try {
-        ws = new WebSocket(`${proto}//${location.host}/ws`);
+        ws = new WebSocket(`${proto}//${location.host}/ws${AUTH_TOKEN ? `?token=${encodeURIComponent(AUTH_TOKEN)}` : ''}`);
       } catch (e) {
         log('WS connect failed: ' + e.message, 'error');
         return;
@@ -891,7 +894,7 @@
       const box = document.getElementById('historyList');
       box.innerHTML = '<div style="color:var(--text-muted);font-size:12px">加载中…</div>';
       try {
-        const res = await fetch('/api/runs?limit=30');
+        const res = await fetch('/api/runs?limit=30', { headers: authHeaders() });
         const data = await res.json();
         const runs = data.runs || [];
         if (!runs.length) {
@@ -938,7 +941,7 @@
       if (detail.dataset.loaded) return;
       detail.textContent = '加载中…';
       try {
-        const res = await fetch('/api/runs/' + encodeURIComponent(runId));
+        const res = await fetch('/api/runs/' + encodeURIComponent(runId), { headers: authHeaders() });
         const run = await res.json();
         if (run.error === 'no such run') { detail.textContent = '没有这次运行'; return; }
         const rows = Object.entries(run.nodes || {}).map(([nodeId, node]) => {

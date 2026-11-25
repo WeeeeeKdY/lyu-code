@@ -26,6 +26,15 @@
  *   WORKFLOW_ASK_TIMEOUT_MS  单个提问的等待上限（默认 10 分钟）
  *   WORKFLOW_NODE_TIMEOUT_MS 单个节点的硬上限（默认 60 分钟）
  *   LYU_WORKFLOW_NO_OPEN=1   不自动打开浏览器（测试/无头）
+ *   WORKFLOW_MAX_CONCURRENT  同时跑几个工作流（默认 3，超出的排队）
+ *   WORKFLOW_AUTH_TOKEN      开令牌门禁并指定令牌；接口与 WS 都必须带它
+ *   WORKFLOW_REQUIRE_TOKEN=1 开令牌门禁，令牌用端口文件里那把（0600，本用户可读）
+ *
+ * 安全边界：只监听 127.0.0.1；Host 必须是自己（挡 DNS rebinding）；带 Origin 的
+ * 请求必须来自编辑器自己的源（挡网页对本机端口的跨站 WS/表单）。这三条默认生效，
+ * 足以挡住「随便打开一个网页就被驱动我的 agent」。令牌是额外的、可选的第四层，
+ * 用于本机还有别的用户/别的进程的场景——开了之后 Lyu 的固定地址按钮拿不到令牌，
+ * 需要改用 /workflow 给出的链接。
  */
 
 import type {
@@ -262,11 +271,46 @@ function getFrontendDir(): string {
   return path.join(thisDir, "..", "frontend", "dist");
 }
 
+/** Host 必须是我们自己：挡 DNS rebinding（evil.com 解析到 127.0.0.1 也能过网络层）。 */
+function hostPinned(req: http.IncomingMessage): boolean {
+  return req.headers.host === `127.0.0.1:${port}`;
+}
+
+/**
+ * 浏览器发来的请求，Origin 必须是编辑器自己的源——否则任意网页都能对本机端口发
+ * WebSocket / 表单 POST（WS 完全不受 CORS 约束，这是最现实的一条攻击面）。
+ * curl、子进程、Electron 里的 iframe 都不带或带自己的源，按规则放行/拒绝。
+ */
+function originTrusted(req: http.IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
+}
+
+function tokenOk(given: unknown): boolean {
+  if (!authToken) return true;   // 没开令牌门禁
+  if (typeof given !== "string" || given.length !== authToken.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(authToken));
+}
+
+/** 节点子进程用的接口，自带每个 run 的令牌，不吃全局门禁令牌。 */
+function isNodeEndpoint(urlPath: string): boolean {
+  return urlPath === "/api/ask" || urlPath === "/api/progress";
+}
+
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
-  if (req.headers.host !== `127.0.0.1:${port}`) { res.writeHead(403); res.end(); return; }
+  if (!hostPinned(req) || !originTrusted(req)) { res.writeHead(403); res.end(); return; }
   const frontendDir = getFrontendDir();
   const url = new URL(req.url ?? "/", "http://localhost");
   let urlPath = url.pathname;
+  // 令牌只管接口：静态壳子（index.html）放开，否则页面自己加载资源时又得带令牌。
+  // 读不到内容这件事由「不发 CORS 头」保证，写操作走 WS，WS 同样要令牌。
+  const needsToken = urlPath.startsWith("/api/") && !isNodeEndpoint(urlPath);
+  if (needsToken && !tokenOk(req.headers["x-workflow-token"] ?? url.searchParams.get("token"))) {
+    res.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("缺少或错误的令牌：用 /workflow 打开编辑器（链接里带令牌）");
+    return;
+  }
 
   // API 路由
   if (urlPath.startsWith("/api/")) {
@@ -1470,14 +1514,17 @@ function openBrowser(url: string) {
 }
 
 function startServer(): Promise<number> {
+  // 想开门禁但没显式给令牌时，用端口文件里那把（0600，只有本用户读得到）。
+  if (process.env.WORKFLOW_REQUIRE_TOKEN === "1" && !authToken) authToken = answerToken;
   return new Promise((resolve, reject) => {
     server = http.createServer(serveStatic);
 
     // WebSocket upgrade (简易实现)
     server.on("upgrade", (req, socket, head) => {
-      const expectedOrigin = `http://127.0.0.1:${port}`;
-      if (req.headers.host !== `127.0.0.1:${port}` ||
-          (req.headers.origin && req.headers.origin !== expectedOrigin) || req.url !== "/ws") {
+      const rawUrl = req.url ?? "";
+      const wsUrl = new URL(rawUrl, `http://127.0.0.1:${port}`);
+      if (!hostPinned(req) || !originTrusted(req) || wsUrl.pathname !== "/ws" ||
+          !tokenOk(wsUrl.searchParams.get("token"))) {
         socket.destroy();
         return;
       }
@@ -1602,6 +1649,16 @@ function stopServer() {
   server = null;
   adoptedPort = null;
 }
+
+/**
+ * 可选的门禁令牌。
+ *
+ * 默认空：编辑器只监听 127.0.0.1，靠 Host + Origin 校验挡住远程访问和网页跨站。
+ * 设了 WORKFLOW_AUTH_TOKEN（或 WORKFLOW_REQUIRE_TOKEN=1 用端口文件里的令牌）之后，
+ * 所有页面/接口都要带令牌，用于「本机还有别的用户/别的进程不该操作我的 agent」的场景。
+ * 节点用的 /api/ask、/api/progress 例外：它们带的是每个 run 自己的随机令牌。
+ */
+let authToken = process.env.WORKFLOW_AUTH_TOKEN ?? "";
 
 // 服务地址落盘，供 Lyu 等外部 UI 读取（纯诊断/便利，写入失败不影响运行）
 const PORT_FILE = path.join(os.homedir(), ".pi", "agent", "workflow-server.json");
@@ -1822,7 +1879,7 @@ export default function (pi: ExtensionAPI) {
 
       const actualPort = await ensureServer();
       const url = `http://127.0.0.1:${actualPort}`;
-      openBrowser(url);
+      openBrowser(authToken ? `${url}/?token=${authToken}` : url);
 
       pi.sendMessage({
         customType: "workflow",
