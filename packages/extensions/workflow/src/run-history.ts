@@ -25,7 +25,10 @@ const MAX_RUNS = 200;
 /** 单个节点输出落盘上限，超出截断（agent 输出可能非常大）。 */
 const MAX_FIELD = 20_000;
 const WRITE_THROTTLE_MS = 500;
-const TERMINAL_STATUSES = new Set(["done", "error", "paused", "idle"]);
+// paused 不在终态里：它只意味着「正在等人回答」，答完之后同一个 run 还会回到 running。
+// 曾经把它当终态，结果第一次 flush 之后就把 active 条目删了，答完后真正的 done 广播
+// 找不到记录，历史里永远停在 paused、失败节点也永远显示 running。
+const TERMINAL_STATUSES = new Set(["done", "error", "idle"]);
 
 export interface RunNodeRecord {
   status: string;

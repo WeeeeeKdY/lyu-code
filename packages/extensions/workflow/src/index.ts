@@ -285,6 +285,8 @@ function handleApi(req: http.IncomingMessage, res: http.ServerResponse, urlPath:
     ok(run);
   } else if (urlPath === "/api/ask") {
     void handleAsk(req, res, url);
+  } else if (urlPath === "/api/pending" || urlPath === "/api/answer") {
+    void handleAskBridge(req, res, urlPath === "/api/answer");
   } else {
     ok({ error: "not found" });
   }
@@ -345,6 +347,44 @@ function cancelAsksFor(workflowId: string, answer: AskAnswer = { cancelled: true
   }
 }
 
+/**
+ * 终端通道的 HTTP 桥：列挂着的提问 / 回答一个提问。
+ *
+ * 只在本机监听，但额外要求端口文件里的令牌。没有令牌的请求一律 403，
+ * 免得任何一个本机进程都能替你回答 agent 的确认。
+ */
+async function handleAskBridge(req: http.IncomingMessage, res: http.ServerResponse, isAnswer: boolean) {
+  const unauthorized = () => {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "forbidden" }));
+  };
+  if (req.headers["x-workflow-token"] !== answerToken) return unauthorized();
+
+  if (!isAnswer) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ asks: [...pendingAsks.values()].map(askInfo) }));
+    return;
+  }
+
+  let body: { askId?: string; answer?: string };
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "bad body" }));
+    return;
+  }
+  const ask = pendingAsks.get(String(body.askId ?? ""));
+  if (!ask) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "no such ask" }));
+    return;
+  }
+  settleAsk(ask, { answer: String(body.answer ?? "") });
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true }));
+}
+
 async function handleAsk(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
   const wfId = url.searchParams.get("wf") ?? "";
   const token = url.searchParams.get("token") ?? "";
@@ -377,11 +417,10 @@ async function handleAsk(req: http.IncomingMessage, res: http.ServerResponse, ur
     return;
   }
 
-  // 没人在看：直接告诉 agent 自己拿主意，而不是白等 10 分钟
+  // 没人在看页面：不再直接让 agent 自己拿主意（那就等于提问功能只在开着编辑器时存在），
+  // 改成把问题推到本会话并挂在 /workflow ask 里，从终端回答。
   if (wsClients.length === 0) {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ answer: "当前没有打开的工作流页面，无法向用户提问。请基于合理假设继续，并在结论中标注待确认项。" }));
-    return;
+    process.stderr.write(`[workflow] 无页面连接，提问转终端通道：${question.slice(0, 80)}\n`);
   }
 
   const ask: PendingAsk = {
@@ -399,6 +438,20 @@ async function handleAsk(req: http.IncomingMessage, res: http.ServerResponse, ur
   };
   ask.timer = setTimeout(() => settleAsk(ask, { timedOut: true }), ASK_TIMEOUT_MS);
   pendingAsks.set(ask.askId, ask);
+
+  // 终端通道的通知：不阻塞、不抢焦点，只是让人知道有事要答。
+  if (wsClients.length === 0) {
+    try {
+      piRef?.sendMessage({
+        customType: "workflow",
+        display: true,
+        content:
+          `❓ 节点「${ask.nodeLabel}」需要你确认：\n${ask.question.slice(0, 500)}\n\n` +
+          `回复：/workflow answer ${ask.askId} <你的回答>\n` +
+          `（${Math.round(ASK_TIMEOUT_MS / 60000)} 分钟内不答则超时，agent 会基于假设继续）`,
+      });
+    } catch { /* 通知失败不能拖垮提问本身 */ }
+  }
 
   // 整个 run 进入 paused（暂停的是"编排"，节点本身仍在等回答）
   state.status = "paused";
@@ -1414,6 +1467,15 @@ function stopServer() {
 // 服务地址落盘，供 Lyu 等外部 UI 读取（纯诊断/便利，写入失败不影响运行）
 const PORT_FILE = path.join(os.homedir(), ".pi", "agent", "workflow-server.json");
 
+/**
+ * 跨会话回答提问用的令牌。
+ *
+ * 工作流服务单例：A 会话起的服务，B 会话会用 adopt 方式连上来。提问挂在 A 的内存里，
+ * 所以要能从 B 里回答就得走 HTTP。端口文件已经是 0600、只在本机，令牌写在里面
+ * 作为「同一用户」之外的一层区分：其他本机进程拿不到令牌就不能替你作答。
+ */
+const answerToken = crypto.randomBytes(24).toString("hex");
+
 function writePortFile(actualPort: number) {
   try {
     fs.mkdirSync(path.dirname(PORT_FILE), { recursive: true });
@@ -1421,13 +1483,70 @@ function writePortFile(actualPort: number) {
       port: actualPort,
       url: `http://127.0.0.1:${actualPort}`,
       pid: process.pid,
+      token: answerToken,
       updatedAt: Date.now(),
-    }, null, 2));
+    }, null, 2), { mode: 0o600 });
   } catch { /* ok */ }
 }
 
 function clearPortFile() {
   try { fs.unlinkSync(PORT_FILE); } catch { /* ok */ }
+}
+
+interface PortFileInfo {
+  port: number;
+  url: string;
+  pid: number;
+  token?: string;
+}
+
+function readPortFile(): PortFileInfo | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(PORT_FILE, "utf8")) as PortFileInfo;
+    return typeof parsed?.port === "number" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 所有挂着的提问：本进程一份，若是别的会话起的服务，再从那边拉一份。 */
+async function collectPendingAsks(): Promise<PendingAskInfo[]> {
+  const local = [...pendingAsks.values()].map(askInfo);
+  const info = readPortFile();
+  if (!info?.token || info.pid === process.pid) return local;
+  try {
+    const res = await fetch(`${info.url}/api/pending`, {
+      headers: { "x-workflow-token": info.token },
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return local;
+    const data = (await res.json()) as { asks?: PendingAskInfo[] };
+    return [...local, ...(data.asks ?? [])];
+  } catch {
+    return local;
+  }
+}
+
+/** 回答一个提问：本地直接结掉，否则转给拥有服务的那个会话。 */
+async function answerAsk(askId: string, answer: string): Promise<boolean> {
+  const local = pendingAsks.get(askId);
+  if (local) {
+    settleAsk(local, { answer });
+    return true;
+  }
+  const info = readPortFile();
+  if (!info?.token || info.pid === process.pid) return false;
+  try {
+    const res = await fetch(`${info.url}/api/answer`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-workflow-token": info.token },
+      body: JSON.stringify({ askId, answer }),
+      signal: AbortSignal.timeout(3000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1480,6 +1599,42 @@ export default function (pi: ExtensionAPI) {
         stopServer();
         if (owned) clearPortFile();
         pi.sendMessage({ customType: "workflow", content: "Workflow server stopped", display: true });
+        return;
+      }
+
+      // /workflow ask —— 看当前挂着的提问；/workflow answer <askId> <回答> —— 从终端回答。
+      // 提问原本只能从编辑器页面答，关掉页面就等于没有提问能力。
+      if (/^ask\b/.test(args.trim()) || args.trim().startsWith("answer")) {
+        const trimmed = args.trim();
+        if (trimmed.startsWith("answer")) {
+          const match = /^answer\s+(\S+)\s+([\s\S]+)$/.exec(trimmed);
+          if (!match) {
+            pi.sendMessage({ customType: "workflow", content: "用法：/workflow answer <askId> <回答>", display: true });
+            return;
+          }
+          const askId = match[1] ?? "";
+          const answer = match[2] ?? "";
+          const done = await answerAsk(askId, answer.trim());
+          pi.sendMessage({
+            customType: "workflow",
+            content: done ? `已作答：${askId}` : `没有这条提问（或服务属于另一个会话且不可达）：${askId}`,
+            display: true,
+          });
+          return;
+        }
+
+        const asks = await collectPendingAsks();
+        const content = !asks.length
+          ? "当前没有待回答的提问"
+          : [
+              `待回答 ${asks.length} 条：`,
+              ...asks.map(ask => {
+                const age = Math.round((Date.now() - ask.askedAt) / 1000);
+                const options = ask.options.length ? `\n     选项: ${ask.options.join(" / ")}` : "";
+                return `• [${ask.nodeLabel}] ${ask.question}${options}\n     ${ask.askId}（已等 ${age}s）\n     回答：/workflow answer ${ask.askId} <你的回答>`;
+              }),
+            ].join("\n");
+        pi.sendMessage({ customType: "workflow", content, display: true });
         return;
       }
 
