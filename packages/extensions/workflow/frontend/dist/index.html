@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lyu-Code Workflow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-primary: #0a0f1c;
+      --bg-secondary: #111827;
+      --bg-tertiary: #1a2332;
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent: #22d3ee;
+      --accent-glow: rgba(34, 211, 238, 0.3);
+      --accent2: #a78bfa;
+      --accent2-glow: rgba(167, 139, 250, 0.3);
+      --accent3: #f59e0b;
+      --accent3-glow: rgba(245, 158, 11, 0.3);
+      --accent4: #f472b6;
+      --accent4-glow: rgba(244, 114, 182, 0.3);
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --border: rgba(148, 163, 184, 0.12);
+      --border-active: rgba(34, 211, 238, 0.4);
+      --font-display: "Space Grotesk", sans-serif;
+      --font-mono: "JetBrains Mono", monospace;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+      --shadow-glow: 0 0 20px var(--accent-glow);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; font-family: var(--font-display); background: var(--bg-primary); color: var(--text-primary); }
+
+    #app { display: grid; grid-template-rows: 48px 1fr; grid-template-columns: 260px 1fr 300px; height: 100vh; }
+
+    /* Header */
+    header { grid-column: 1 / -1; background: var(--bg-secondary); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 12px; }
+    header .logo { font-weight: 700; font-size: 14px; letter-spacing: -0.3px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    header .wf-name { font-size: 13px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px 8px; background: transparent; outline: none; font-family: var(--font-display); width: 180px; }
+    header .wf-name:focus { border-color: var(--accent); }
+
+    .toolbar { display: flex; gap: 4px; margin-left: auto; }
+    .btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: 12px; font-family: var(--font-display); cursor: pointer; transition: all 0.15s; }
+    .btn:hover { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--text-muted); }
+    .btn.primary { background: rgba(34,211,238,0.12); color: var(--accent); border-color: var(--accent); }
+    .btn.primary:hover { background: rgba(34,211,238,0.22); box-shadow: var(--shadow-glow); }
+    .btn.danger { color: var(--danger); border-color: rgba(248,113,113,0.3); }
+    .btn.danger:hover { background: rgba(248,113,113,0.1); }
+
+    .status-pill { font-size: 11px; padding: 2px 8px; border-radius: 99px; font-family: var(--font-mono); }
+    .status-pill.idle { background: rgba(100,116,139,0.15); color: var(--text-muted); }
+    .status-pill.running { background: rgba(74,222,128,0.15); color: var(--success); animation: pulse 1.5s infinite; }
+    .status-pill.done { background: rgba(34,211,238,0.15); color: var(--accent); }
+    .status-pill.error { background: rgba(248,113,113,0.15); color: var(--danger); }
+    .status-pill.paused { background: rgba(245,158,11,0.15); color: var(--accent3); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{ opacity:1 } 50%{ opacity:0.6 } }
+
+    /* Sidebar */
+    aside { background: var(--bg-secondary); border-right: 1px solid var(--border); padding: 12px; overflow-y: auto; }
+    aside h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 10px; }
+
+    .palette-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 4px; border-radius: var(--radius-sm); border: 1px solid var(--border); cursor: grab; transition: all 0.15s; font-size: 13px; }
+    .palette-item:hover { border-color: var(--accent); background: rgba(34,211,238,0.06); }
+    .palette-item .icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+    .palette-item.agent .icon { background: rgba(34,211,238,0.15); }
+    .palette-item.if-node .icon { background: rgba(245,158,11,0.15); }
+    .palette-item.for-node .icon { background: rgba(244,114,182,0.15); }
+
+    .config-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .config-section label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; margin-top: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .config-section input, .config-section textarea, .config-section select { width: 100%; padding: 5px 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; font-family: var(--font-display); outline: none; }
+    .config-section input:focus, .config-section textarea:focus, .config-section select:focus { border-color: var(--accent); }
+    .config-section textarea { min-height: 60px; resize: vertical; font-family: var(--font-mono); font-size: 11px; }
+
+    .tool-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .tool-tag { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-family: var(--font-mono); cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
+    .tool-tag.enabled { background: rgba(34,211,238,0.12); color: var(--accent); border-color: rgba(34,211,238,0.3); }
+    .tool-tag.disabled { background: rgba(248,113,113,0.08); color: var(--danger); border-color: rgba(248,113,113,0.2); text-decoration: line-through; }
+    .tool-tag.neutral { background: rgba(100,116,139,0.08); color: var(--text-muted); border-color: var(--border); }
+
+    .custom-tool-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; margin-bottom: 3px; background: var(--bg-primary); border-radius: var(--radius-sm); font-size: 11px; }
+    .custom-tool-item .tool-type { font-size: 9px; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; }
+    .custom-tool-item .tool-type.extension { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .custom-tool-item .tool-type.mcp { background: rgba(34,211,238,0.15); color: var(--accent); }
+    .custom-tool-item .tool-type.builtin { background: rgba(100,116,139,0.15); color: var(--text-muted); }
+
+    /* Canvas */
+    .canvas-wrap { position: relative; overflow: hidden; background: radial-gradient(ellipse at 30% 70%, rgba(34,211,238,0.04) 0%, transparent 50%), radial-gradient(ellipse at 70% 30%, rgba(167,139,250,0.04) 0%, transparent 50%), var(--bg-primary); }
+    .canvas-wrap::before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(148,163,184,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.04) 1px, transparent 1px); background-size: 40px 40px; pointer-events: none; }
+    #canvas { position: absolute; inset: 0; }
+    .canvas-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .canvas-wrap svg path { fill: none; stroke-width: 2; stroke-dasharray: 8 4; opacity: 0.5; }
+    .canvas-wrap svg path.edge-default { stroke: var(--accent); filter: drop-shadow(0 0 4px var(--accent-glow)); }
+    .canvas-wrap svg path.edge-true { stroke: var(--success); filter: drop-shadow(0 0 4px rgba(74,222,128,0.3)); }
+    .canvas-wrap svg path.edge-false { stroke: var(--danger); filter: drop-shadow(0 0 4px rgba(248,113,113,0.3)); }
+    .canvas-wrap svg path.edge-body { stroke: var(--accent4); filter: drop-shadow(0 0 4px var(--accent4-glow)); stroke-dasharray: 4 4; }
+    .canvas-wrap svg path.active { opacity: 1; stroke-dasharray: none; }
+    .edge-label { font-family: var(--font-mono); font-size: 10px; fill: var(--text-muted); }
+
+    /* Nodes */
+    .node { position: absolute; width: 180px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); cursor: move; user-select: none; transition: box-shadow 0.15s, border-color 0.15s; }
+    .node:hover { border-color: var(--text-muted); }
+    .node.selected { border-color: var(--accent); box-shadow: var(--shadow), var(--shadow-glow); }
+    .node.running { border-color: var(--success); animation: pulse 1.5s infinite; }
+    .node.done { border-color: rgba(74,222,128,0.4); }
+    .node.type-if { border-left: 3px solid var(--accent3); }
+    .node.type-for { border-left: 3px solid var(--accent4); }
+    .node.type-input { border-left: 3px solid var(--success); }
+    .node.type-output { border-left: 3px solid var(--accent2); }
+    .node.skipped { opacity: .4; }
+
+    .node-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; }
+    .node-header .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .node.type-agent .node-header .dot { background: var(--accent); }
+    .node.type-if .node-header .dot { background: var(--accent3); }
+    .node.type-for .node-header .dot { background: var(--accent4); }
+    .node.type-input .node-header .dot { background: var(--success); }
+    .node.type-output .node-header .dot { background: var(--accent2); }
+    .node.running .node-header .dot { background: var(--success); }
+    .node.done .node-header .dot { background: var(--success); opacity: 0.5; }
+
+    .node-body { padding: 8px 10px; font-size: 11px; color: var(--text-muted); }
+    .node-body .model-tag { display: inline-block; padding: 1px 6px; background: rgba(167,139,250,0.12); color: var(--accent2); border-radius: 4px; font-family: var(--font-mono); font-size: 10px; }
+    .node-body .if-expr { font-family: var(--font-mono); font-size: 10px; color: var(--accent3); word-break: break-all; }
+    .node-body .for-info { font-family: var(--font-mono); font-size: 10px; color: var(--accent4); }
+
+    /* Ports */
+    .port { width: 12px; height: 12px; border-radius: 50%; background: var(--bg-tertiary); border: 2px solid var(--text-muted); position: absolute; cursor: crosshair; transition: all 0.15s; z-index: 2; }
+    .port:hover { border-color: var(--accent); background: var(--accent-glow); transform: scale(1.4); }
+    .port.in { left: -6px; top: 50%; margin-top: -6px; }
+    .port.out { right: -6px; top: 50%; margin-top: -6px; }
+    .port.true-out { right: -6px; top: 30%; margin-top: -6px; border-color: var(--success); }
+    .port.false-out { right: -6px; top: 70%; margin-top: -6px; border-color: var(--danger); }
+    .port.body-out { right: -6px; top: 40%; margin-top: -6px; border-color: var(--accent4); }
+    .port.done-out { right: -6px; top: 70%; margin-top: -6px; border-color: var(--accent); }
+
+    .port-label { position: absolute; font-size: 9px; font-family: var(--font-mono); pointer-events: none; z-index: 3; }
+    .port-label.true-label { right: 8px; top: 24%; color: var(--success); }
+    .port-label.false-label { right: 8px; top: 64%; color: var(--danger); }
+    .port-label.body-label { right: 8px; top: 34%; color: var(--accent4); }
+    .port-label.done-label { right: 8px; top: 64%; color: var(--accent); }
+
+    /* Right Panel */
+    .panel { background: var(--bg-secondary); border-left: 1px solid var(--border); padding: 12px; overflow-y: auto; font-size: 12px; }
+    .panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 10px; }
+    .run-log { font-family: var(--font-mono); font-size: 11px; line-height: 1.6; }
+    .run-log .entry { padding: 4px 6px; margin-bottom: 2px; border-radius: 4px; background: var(--bg-primary); }
+    .run-log .entry.error { color: var(--danger); }
+    .run-log .entry.success { color: var(--success); }
+    .run-log .entry.info { color: var(--accent); }
+    .iter-badge { display: inline-block; padding: 1px 6px; background: rgba(251,191,36,0.12); color: var(--warning); border-radius: 4px; font-family: var(--font-mono); font-size: 10px; }
+    .panel textarea, .panel select { width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font: 12px var(--font-display); margin: 6px 0; }
+    .result-box { white-space: pre-wrap; word-break: break-word; max-height: 35vh; overflow: auto; padding: 10px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); font: 11px var(--font-mono); }
+
+    .empty-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-muted); gap: 8px; }
+    .empty-state .big-icon { font-size: 48px; opacity: 0.3; }
+    .empty-state p { font-size: 14px; }
+    .empty-state .hint { font-size: 11px; color: var(--text-muted); opacity: 0.6; }
+
+    /* Dialog */
+    .dialog-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .dialog { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; min-width: 360px; box-shadow: var(--shadow); }
+    .dialog h4 { font-size: 14px; margin-bottom: 12px; }
+    .dialog .field { margin-bottom: 10px; }
+    .dialog .field label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .dialog .field input, .dialog .field select, .dialog .field textarea { width: 100%; padding: 6px 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none; font-family: var(--font-display); }
+    .dialog .field textarea { font-family: var(--font-mono); font-size: 11px; min-height: 40px; resize: vertical; }
+    .dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+    /* Ask User Dialog */
+    .ask-dialog { min-width: 460px; max-width: 640px; }
+    .ask-dialog h4 { display: flex; align-items: center; gap: 6px; }
+    .ask-question { white-space: pre-wrap; word-break: break-word; padding: 10px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 12px; max-height: 30vh; overflow: auto; }
+    .ask-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .ask-options:empty { display: none; }
+    .ask-option { font-size: 12px; }
+    .ask-meta { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <span class="logo">⚡ lyu-code</span>
+      <span style="color:var(--text-muted);font-size:12px">/</span>
+      <input class="wf-name" id="wfName" value="Untitled Workflow" placeholder="Workflow name" />
+      <span class="status-pill idle" id="statusPill">IDLE</span>
+      <div class="toolbar">
+        <button class="btn" onclick="addNode('input')">↳ Input</button>
+        <button class="btn" onclick="addNode('agent')">🤖 Agent</button>
+        <button class="btn" onclick="addNode('if')">🔀 If</button>
+        <button class="btn" onclick="addNode('for')">🔁 For</button>
+        <button class="btn" onclick="addNode('output')">◎ Output</button>
+        <button class="btn" onclick="saveWorkflow()">保存</button>
+        <button class="btn" onclick="loadWorkflow()">读取</button>
+        <button class="btn primary" id="runBtn" onclick="runWorkflow()">▶ Run</button>
+        <button class="btn" onclick="stopWorkflow()">■ Stop</button>
+        <button class="btn danger" onclick="clearAll()">✕ Clear</button>
+      </div>
+    </header>
+
+    <aside>
+      <h3>Node Palette</h3>
+      <div class="palette-item" onclick="addNode('input')"><div class="icon">↳</div><span>Input (用户输入)</span></div>
+      <div class="palette-item agent" onclick="addNode('agent')">
+        <div class="icon">🤖</div><span>Agent</span>
+      </div>
+      <div class="palette-item if-node" onclick="addNode('if')">
+        <div class="icon">🔀</div><span>If (条件分支)</span>
+      </div>
+      <div class="palette-item for-node" onclick="addNode('for')">
+        <div class="icon">🔁</div><span>For (循环)</span>
+      </div>
+      <div class="palette-item" onclick="addNode('output')"><div class="icon">◎</div><span>Output (最终结果)</span></div>
+
+      <div class="config-section" id="nodeConfig" style="display:none">
+        <h3 id="configTitle">Node Config</h3>
+        <label>Label</label>
+        <input type="text" id="cfgLabel" oninput="updateSelectedNode()" />
+
+        <div id="agentConfig">
+          <label>Model</label>
+          <select id="cfgModel" onchange="updateSelectedNode()">
+            <option value="">default</option>
+            <option value="gpt-6-sol">GPT-6 Sol</option>
+            <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+            <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+            <option value="glm-5.3">GLM 5.3</option>
+          </select>
+          <label>System Prompt</label>
+          <textarea id="cfgPrompt" oninput="updateSelectedNode()" placeholder="You are a helpful agent..."></textarea>
+          <label>Max Loops</label>
+          <input type="number" id="cfgMaxLoops" value="1" min="1" max="100" oninput="updateSelectedNode()" />
+
+          <label style="margin-top:12px">🔧 工具配置</label>
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">点击切换: ✓允许 ✕禁用 ○默认</div>
+          <div class="tool-tags" id="toolTags"></div>
+          <div style="margin-top:8px">
+            <button class="btn" onclick="showAddCustomToolDialog()" style="font-size:11px">+ 自定义工具</button>
+          </div>
+          <div id="customToolList" style="margin-top:8px"></div>
+        </div>
+
+        <div id="ifConfig" style="display:none">
+          <label>当上游文本</label>
+          <select id="cfgConditionOperator" onchange="updateSelectedNode()">
+            <option value="contains">包含</option><option value="not_contains">不包含</option>
+            <option value="equals">等于</option><option value="not_equals">不等于</option>
+            <option value="is_empty">为空</option><option value="is_not_empty">不为空</option>
+          </select>
+          <input id="cfgConditionValue" placeholder="输入要匹配的文字" oninput="updateSelectedNode()" />
+          <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
+            ✅ True 出口 → 上方端口<br/>
+            ❌ False 出口 → 下方端口
+          </div>
+        </div>
+
+        <div id="forConfig" style="display:none">
+          <label>循环次数 (静态)</label>
+          <input type="number" id="cfgLoopCount" value="3" min="1" max="1000" oninput="updateSelectedNode()" />
+          <div style="font-size:10px;color:var(--text-muted);margin-top:6px">body 连接无后续连线的 Agent；done 连接后续步骤。</div>
+          <label>循环体节点</label>
+          <div id="loopBodySelector" style="font-size:11px;color:var(--text-muted);margin-top:4px">
+            连接 body 端口到子节点即可
+          </div>
+        </div>
+
+        <label style="margin-top:12px">Global Max Loops</label>
+        <input type="number" id="cfgGlobalLoops" value="10" min="1" max="100" />
+        <label style="margin-top:8px">上游输出最大字符数</label>
+        <input type="number" id="cfgMaxUpstream" value="8000" min="0" max="100000" />
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px">0 = 不限; 超出截断并标注</div>
+        <div style="margin-top:12px">
+          <button class="btn danger" onclick="deleteSelectedNode()" style="width:100%">Delete Node</button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="canvas-wrap">
+      <div class="empty-state" id="emptyState">
+        <div class="big-icon">⚡</div>
+        <p>从 Input 开始，连接 Agent，最后接到 Output</p>
+        <span class="hint">同层无依赖 Agent 并行执行；点击 Run 后才启动</span>
+      </div>
+      <div id="canvas"></div>
+      <svg id="arrows"></svg>
+    </div>
+
+    <div class="panel">
+      <h3>本次输入</h3>
+      <textarea id="runInput" rows="5" placeholder="输入需要工作流处理的问题或任务"></textarea>
+      <h3 style="margin-top:12px">已保存的工作流</h3>
+      <select id="savedWorkflows" aria-label="已保存的工作流"><option value="">选择工作流...</option></select>
+      <h3 style="margin-top:12px">最终结果</h3>
+      <div id="finalOutput" class="result-box">运行完成后显示在这里</div>
+      <h3 style="margin-top:14px">Run Log</h3>
+      <div style="margin-bottom:8px">
+        <span style="color:var(--text-muted);font-size:11px">Iteration:</span>
+        <span class="iter-badge" id="iterBadge">0</span>
+      </div>
+      <div class="run-log" id="runLog">
+        <div class="entry" style="color:var(--text-muted)">Ready.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Tool Dialog -->
+  <div class="dialog-overlay" id="customToolDialog" style="display:none" onclick="if(event.target===this)closeCustomToolDialog()">
+    <div class="dialog">
+      <h4>➕ 添加自定义工具</h4>
+      <div class="field"><label>工具名</label><input type="text" id="dlgToolName" placeholder="my_tool" /></div>
+      <div class="field"><label>描述</label><input type="text" id="dlgToolDesc" placeholder="Does something useful" /></div>
+      <div class="field"><label>类型</label><select id="dlgToolType"><option value="extension">Extension</option><option value="mcp">MCP</option><option value="builtin">Builtin</option></select></div>
+      <div class="field"><label>来源 (extension名 / MCP server名)</label><input type="text" id="dlgToolSource" placeholder="my-extension" /></div>
+      <div class="actions">
+        <button class="btn" onclick="closeCustomToolDialog()">取消</button>
+        <button class="btn primary" onclick="addCustomToolToNode()">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ask User Dialog — 节点 agent 提问 -->
+  <div class="dialog-overlay" id="askDialog" style="display:none">
+    <div class="dialog ask-dialog">
+      <h4>❓ <span id="askNode">Agent</span> 需要你的确认</h4>
+      <div class="ask-question" id="askQuestion"></div>
+      <div class="ask-options" id="askOptions"></div>
+      <div class="field" style="margin-top:12px">
+        <label>你的回答 <span class="ask-meta">Ctrl/⌘ + Enter 发送</span></label>
+        <textarea id="askAnswer" rows="3" placeholder="补充信息或直接回答"></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn danger" onclick="stopWorkflow()">中止运行</button>
+        <button class="btn primary" onclick="submitAskAnswer()">发送回答</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ─── State ──────────────────────────────────────────    let ws = null;
+    let nodes = [];
+    let edges = [];
+    let selectedNodeId = null;
+    let dragging = null;       // { nodeId, offsetX, offsetY }
+    let connecting = null;     // { fromNodeId, sourcePort, startX, startY, curX, curY }
+    let nextId = 1;
+    let workflowId = crypto.randomUUID();
+    let workflowCreatedAt = Date.now();
+    let wsRetryDelay = 1000;   // WS reconnect backoff
+    const OUTPUT_PORTS = ['out', 'true', 'false', 'body', 'done'];
+
+    let toolStates = {};
+    const BUILTIN_TOOLS = ['read','write','edit','bash','grep','glob','web_search','mcp'];
+
+    // ─── WebSocket (with backoff) ────────────────────────
+    function connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      try {
+        ws = new WebSocket(`${proto}//${location.host}/ws`);
+      } catch (e) {
+        log('WS connect failed: ' + e.message, 'error');
+        return;
+      }
+      ws.onopen = () => {
+        wsRetryDelay = 1000; // reset backoff
+        log('Connected to server', 'success');
+        send('tool:list');
+        send('workflow:list');
+      };
+      ws.onclose = () => {
+        log('Disconnected, reconnecting…', 'error');
+        setTimeout(connectWS, wsRetryDelay);
+        wsRetryDelay = Math.min(wsRetryDelay * 1.5, 10000); // exponential backoff, max 10s
+      };
+      ws.onerror = () => { /* onclose will fire after this */ };
+      ws.onmessage = (e) => {
+        try { handleMsg(JSON.parse(e.data)); } catch (err) { /* ignore parse errors */ }
+      };
+    }
+
+    function send(type, data = {}) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type, data, id: String(++nextId) }));
+    }
+
+    function handleMsg(msg) {
+      switch (msg.type) {
+        case 'connected':
+          log('Server ready', 'success');
+          break;
+        case 'workflow:updated':
+          // Node edits are local until Run/Save; ignore broadcasts from other views.
+          break;
+        case 'workflow:saved':
+          workflowId = msg.data.workflow.id;
+          workflowCreatedAt = msg.data.workflow.createdAt;
+          updateSavedList(msg.data.saved);
+          log('工作流已保存', 'success');
+          break;
+        case 'workflow:list':
+          updateSavedList(msg.data.saved);
+          break;
+        case 'workflow:loaded':
+          workflowId = msg.data.id;
+          workflowCreatedAt = msg.data.createdAt;
+          nodes = msg.data.nodes;
+          edges = msg.data.edges;
+          selectedNodeId = null;
+          document.getElementById('wfName').value = msg.data.name;
+          document.getElementById('cfgMaxUpstream').value = msg.data.maxUpstreamLength ?? 8000;
+          document.getElementById('finalOutput').textContent = '运行完成后显示在这里';
+          render();
+          log('工作流已读取', 'success');
+          break;
+        case 'workflow:error':
+          document.getElementById('finalOutput').textContent = msg.data.message;
+          log(msg.data.message, 'error');
+          break;
+        case 'run:state':
+          updateRunState(msg.data);
+          break;
+        case 'run:nodeResult':
+          log(`✓ ${msg.data.nodeId}: ${String(msg.data.output).slice(0, 80)}…`, 'success');
+          break;
+        case 'run:ifBranch':
+          log(`🔀 If ${msg.data.nodeId} → ${msg.data.branch ? 'TRUE' : 'FALSE'}`, 'info');
+          break;
+        case 'run:needInput':
+          enqueueAsk(msg.data);
+          break;
+        case 'tool:list':
+          if (msg.data?.builtin) {
+            msg.data.builtin.forEach(t => { if (!BUILTIN_TOOLS.includes(t.name)) BUILTIN_TOOLS.push(t.name); });
+          }
+          renderToolTags();
+          break;
+      }
+    }
+
+    function updateSavedList(saved) {
+      const list = document.getElementById('savedWorkflows');
+      const previous = list.value;
+      list.replaceChildren(new Option('选择工作流...', ''));
+      for (const item of saved) list.add(new Option(item.name, item.id));
+      list.value = saved.some(item => item.id === previous) ? previous : workflowId;
+    }
+
+    // ─── Node operations ────────────────────────────────
+    function addNode(type) {
+      if ((type === 'input' || type === 'output') && nodes.some(n => n.type === type)) {
+        log(`只能添加一个 ${type} 节点`, 'error'); return;
+      }
+      const id = crypto.randomUUID();
+      const cx = 200 + Math.random() * 400;
+      const cy = 80 + Math.random() * 250;
+      const defaults = {
+        input: { label: 'Input', config: {} },
+        output: { label: 'Output', config: {} },
+        agent: { label: `Agent ${nodes.filter(n=>n.type==='agent').length+1}`, config: { systemPrompt:'', model:'', maxLoops:1, tools:[], disabledTools:[], customTools:[] } },
+        'if':  { label: `If ${nodes.filter(n=>n.type==='if').length+1}`, config: { conditionOperator: 'contains', conditionValue: '' } },
+        'for': { label: `For ${nodes.filter(n=>n.type==='for').length+1}`, config: { loopCount:3, loopExpr:'', breakCondition:'', loopBodyNodeIds:[] } },
+      };
+      const d = defaults[type];
+      const node = { id, type, label: d.label, config: { ...d.config }, position: { x: cx, y: cy } };
+      nodes.push(node);
+      selectedNodeId = id;
+      render();
+    }
+
+    function deleteSelectedNode() {
+      if (!selectedNodeId) return;
+      nodes = nodes.filter(n => n.id !== selectedNodeId);
+      edges = edges.filter(e => e.source !== selectedNodeId && e.target !== selectedNodeId);
+      selectedNodeId = null;
+      render();
+    }
+
+    function updateSelectedNode() {
+      const n = nodes.find(n => n.id === selectedNodeId);
+      if (!n) return;
+      n.label = document.getElementById('cfgLabel').value;
+
+      if (n.type === 'agent') {
+        n.config.model = document.getElementById('cfgModel').value;
+        n.config.systemPrompt = document.getElementById('cfgPrompt').value;
+        n.config.maxLoops = parseInt(document.getElementById('cfgMaxLoops').value) || 1;
+        n.config.tools = [];
+        n.config.disabledTools = [];
+        for (const [tool, state] of Object.entries(toolStates)) {
+          if (state === 'enabled') n.config.tools.push(tool);
+          else if (state === 'disabled') n.config.disabledTools.push(tool);
+        }
+      } else if (n.type === 'if') {
+        n.config.conditionOperator = document.getElementById('cfgConditionOperator').value;
+        n.config.conditionValue = document.getElementById('cfgConditionValue').value;
+        delete n.config.condition;
+        document.getElementById('cfgConditionValue').style.display = ['is_empty', 'is_not_empty'].includes(n.config.conditionOperator) ? 'none' : 'block';
+      } else if (n.type === 'for') {
+        n.config.loopCount = Number(document.getElementById('cfgLoopCount').value);
+        delete n.config.loopExpr;
+        delete n.config.breakCondition;
+        n.config.loopBodyNodeIds = edges.filter(e => e.source === n.id && e.sourcePort === 'body').map(e => e.target);
+      }
+
+      const nodeEl = document.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+      if (nodeEl) nodeEl.querySelector('.node-header').lastChild.textContent = n.label;
+    }
+
+    function currentWfId() { return workflowId; }
+
+    // ─── Tool config ────────────────────────────────────
+    function renderToolTags() {
+      const n = nodes.find(n => n.id === selectedNodeId);
+      if (!n || n.type !== 'agent') return;
+      const container = document.getElementById('toolTags');
+      if (!container) return;
+
+      toolStates = {};
+      const allTools = [...BUILTIN_TOOLS];
+      if (n.config.customTools) n.config.customTools.forEach(t => { if (!allTools.includes(t.name)) allTools.push(t.name); });
+
+      allTools.forEach(t => {
+        if (n.config.tools?.includes(t)) toolStates[t] = 'enabled';
+        else if (n.config.disabledTools?.includes(t)) toolStates[t] = 'disabled';
+        else toolStates[t] = 'neutral';
+      });
+
+      container.innerHTML = allTools.map(t => {
+        const s = toolStates[t] || 'neutral';
+        const icons = { enabled: '✓', disabled: '✕', neutral: '○' };
+        return `<span class="tool-tag ${s}" onclick="toggleTool('${escapeHTML(t)}')">${icons[s]} ${escapeHTML(t)}</span>`;
+      }).join('');
+
+      const ctList = document.getElementById('customToolList');
+      if (ctList && n.config.customTools) {
+        ctList.innerHTML = n.config.customTools.map((t, i) =>
+          `<div class="custom-tool-item">
+            <span class="tool-type ${t.type}">${t.type}</span>
+            <span>${escapeHTML(t.name)}</span>
+            <span style="color:var(--text-muted);flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHTML(t.description)}</span>
+            <span style="cursor:pointer;color:var(--danger)" onclick="removeCustomTool(${i})">✕</span>
+          </div>`
+        ).join('');
+      }
+    }
+
+    function toggleTool(toolName) {
+      const cycle = { neutral: 'enabled', enabled: 'disabled', disabled: 'neutral' };
+      toolStates[toolName] = cycle[toolStates[toolName]] || 'neutral';
+      updateSelectedNode();
+      renderToolTags();
+    }
+
+    function showAddCustomToolDialog() { document.getElementById('customToolDialog').style.display = 'flex'; }
+    function closeCustomToolDialog() { document.getElementById('customToolDialog').style.display = 'none'; }
+
+    function addCustomToolToNode() {
+      const n = nodes.find(n => n.id === selectedNodeId);
+      if (!n || n.type !== 'agent') return;
+      const name = document.getElementById('dlgToolName').value.trim();
+      if (!name) return;
+      if (!n.config.customTools) n.config.customTools = [];
+      n.config.customTools.push({
+        name,
+        description: document.getElementById('dlgToolDesc').value,
+        type: document.getElementById('dlgToolType').value,
+        source: document.getElementById('dlgToolSource').value,
+      });
+      send('tool:register', {
+        name,
+        description: document.getElementById('dlgToolDesc').value,
+        toolType: document.getElementById('dlgToolType').value,
+        source: document.getElementById('dlgToolSource').value,
+      });
+      updateSelectedNode();
+      closeCustomToolDialog();
+      renderToolTags();
+    }
+
+    function removeCustomTool(index) {
+      const n = nodes.find(n => n.id === selectedNodeId);
+      if (!n || !n.config.customTools) return;
+      n.config.customTools.splice(index, 1);
+      updateSelectedNode();
+      renderToolTags();
+    }
+
+    // ─── Port position helper ───────────────────────────
+    function getPortPos(node, portName) {
+      const W = 180, H = 56;
+      const nx = node.position.x, ny = node.position.y;
+      if (portName === 'in')  return { x: nx, y: ny + H * 0.5 };
+      if (portName === 'out') return { x: nx + W, y: ny + H * 0.5 };
+      if (portName === 'true')  return { x: nx + W, y: ny + H * 0.3 };
+      if (portName === 'false') return { x: nx + W, y: ny + H * 0.7 };
+      if (portName === 'body')  return { x: nx + W, y: ny + H * 0.4 };
+      if (portName === 'done')  return { x: nx + W, y: ny + H * 0.7 };
+      return { x: nx + W, y: ny + H * 0.5 };
+    }
+
+    // ─── Rendering ──────────────────────────────────────
+    function escapeHTML(value) {
+      return String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+    function render() {
+      const canvas = document.getElementById('canvas');
+      const empty = document.getElementById('emptyState');
+      empty.style.display = nodes.length ? 'none' : 'flex';
+      canvas.innerHTML = '';
+
+      for (const n of nodes) {
+        const el = document.createElement('div');
+        el.className = `node type-${n.type}${n.id === selectedNodeId ? ' selected' : ''}${n._status ? ' ' + n._status : ''}`;
+        el.style.left = n.position.x + 'px';
+        el.style.top = n.position.y + 'px';
+        el.dataset.id = n.id;
+
+        // Build ports
+        let portsHTML = n.type === 'input' ? '' : `<div class="port in" data-port="in" data-node="${n.id}"></div>`;
+        let labelsHTML = '';
+
+        if (n.type === 'agent' || n.type === 'input') {
+          portsHTML += `<div class="port out" data-port="out" data-node="${n.id}"></div>`;
+        } else if (n.type === 'if') {
+          portsHTML += `<div class="port true-out" data-port="true" data-node="${n.id}"></div>`;
+          portsHTML += `<div class="port false-out" data-port="false" data-node="${n.id}"></div>`;
+          labelsHTML += `<span class="port-label true-label">T</span><span class="port-label false-label">F</span>`;
+        } else if (n.type === 'for') {
+          portsHTML += `<div class="port body-out" data-port="body" data-node="${n.id}"></div>`;
+          portsHTML += `<div class="port done-out" data-port="done" data-node="${n.id}"></div>`;
+          labelsHTML += `<span class="port-label body-label">loop</span><span class="port-label done-label">done</span>`;
+        }
+
+        // Build body
+        let bodyHTML = '';
+        if (n.type === 'agent') {
+          bodyHTML = `${n.config.model ? `<span class="model-tag">${n.config.model}</span>` : '<span style="opacity:0.4">no model</span>'}
+            <div style="margin-top:4px">loops: ${n.config.maxLoops ?? 1}</div>`;
+          const tc = (n.config.tools?.length || 0) + (n.config.customTools?.length || 0);
+          const dc = n.config.disabledTools?.length || 0;
+          if (tc || dc) bodyHTML += `<div style="margin-top:2px;font-size:10px">🔧 ${tc ? `✓${tc}` : ''} ${dc ? `✕${dc}` : ''}</div>`;
+        } else if (n.type === 'if') {
+          bodyHTML = `<div class="if-expr">${({contains:'包含',not_contains:'不包含',equals:'等于',not_equals:'不等于',is_empty:'为空',is_not_empty:'不为空'})[n.config.conditionOperator] || '未配置'} ${escapeHTML(n.config.conditionValue || '')}</div>`;
+      } else if (n.type === 'for') {
+          bodyHTML = `<div class="for-info">×${n.config.loopCount ?? 3}</div>`;
+        }
+
+        el.innerHTML = `${portsHTML}${labelsHTML}<div class="node-header"><span class="dot"></span>${escapeHTML(n.label)}</div><div class="node-body">${bodyHTML}</div>`;
+        canvas.appendChild(el);
+      }
+
+      drawArrows();
+      showConfig();
+    }
+
+    function showConfig() {
+      const panel = document.getElementById('nodeConfig');
+      const n = nodes.find(n => n.id === selectedNodeId);
+      if (!n) { panel.style.display = 'none'; return; }
+      panel.style.display = 'block';
+      document.getElementById('configTitle').textContent = `${n.type.toUpperCase()} Config`;
+      document.getElementById('cfgLabel').value = n.label;
+
+      document.getElementById('agentConfig').style.display = n.type === 'agent' ? 'block' : 'none';
+      document.getElementById('ifConfig').style.display = n.type === 'if' ? 'block' : 'none';
+      document.getElementById('forConfig').style.display = n.type === 'for' ? 'block' : 'none';
+
+      if (n.type === 'agent') {
+        document.getElementById('cfgModel').value = n.config.model || '';
+        document.getElementById('cfgPrompt').value = n.config.systemPrompt || '';
+        document.getElementById('cfgMaxLoops').value = n.config.maxLoops || 1;
+        renderToolTags();
+      } else if (n.type === 'if') {
+        document.getElementById('cfgConditionOperator').value = n.config.conditionOperator || 'contains';
+        document.getElementById('cfgConditionValue').value = n.config.conditionValue || '';
+        document.getElementById('cfgConditionValue').style.display = ['is_empty', 'is_not_empty'].includes(n.config.conditionOperator) ? 'none' : 'block';
+      } else if (n.type === 'for') {
+        document.getElementById('cfgLoopCount').value = n.config.loopCount || 3;
+        const bodyIds = n.config.loopBodyNodeIds || [];
+        const bodyNames = bodyIds.map(id => { const bn = nodes.find(n => n.id === id); return bn ? bn.label : id; });
+        document.getElementById('loopBodySelector').innerHTML = bodyNames.length
+          ? bodyNames.map(name => `<span style="color:var(--accent4)">→ ${name}</span>`).join('<br/>')
+          : '<span style="opacity:0.5">连接 body 端口到子节点即可</span>';
+      }
+    }
+
+    function drawArrows() {
+      const svg = document.getElementById('arrows');
+      svg.innerHTML = '';
+      for (const e of edges) {
+        const src = nodes.find(n => n.id === e.source);
+        const tgt = nodes.find(n => n.id === e.target);
+        if (!src || !tgt) continue;
+
+        const p1 = getPortPos(src, e.sourcePort || 'out');
+        const p2 = getPortPos(tgt, 'in');
+        const mx = (p1.x + p2.x) / 2;
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', `M${p1.x},${p1.y} C${mx},${p1.y} ${mx},${p2.y} ${p2.x},${p2.y}`);
+
+        const port = e.sourcePort || 'out';
+        const classMap = { true: 'edge-true', false: 'edge-false', body: 'edge-body' };
+        path.classList.add(classMap[port] || 'edge-default');
+        if (e._active) path.classList.add('active');
+        svg.appendChild(path);
+
+        if (['true','false','body','done'].includes(port)) {
+          const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          label.setAttribute('x', mx);
+          label.setAttribute('y', (p1.y + p2.y) / 2 - 6);
+          label.setAttribute('text-anchor', 'middle');
+          label.classList.add('edge-label');
+          const labelMap = { true: '✓', false: '✗', body: '🔁', done: '✓' };
+          label.textContent = labelMap[port] || '';
+          svg.appendChild(label);
+        }
+      }
+
+      // Draw connecting line (drag-in-progress)
+      if (connecting) {
+        const src = nodes.find(n => n.id === connecting.fromNodeId);
+        if (src) {
+          const p1 = getPortPos(src, connecting.sourcePort);
+          const mx = (p1.x + connecting.curX) / 2;
+          const tmpPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          tmpPath.setAttribute('d', `M${p1.x},${p1.y} C${mx},${p1.y} ${mx},${connecting.curY} ${connecting.curX},${connecting.curY}`);
+          tmpPath.classList.add('edge-default', 'active');
+          svg.appendChild(tmpPath);
+        }
+      }
+    }
+
+    // ─── Global event handlers (bound once!) ────────────
+    document.addEventListener('mousedown', (e) => {
+      const portEl = e.target.closest('.port');
+      if (portEl) {
+        e.preventDefault();
+        e.stopPropagation();
+        const portName = portEl.dataset.port;
+        const nodeId = portEl.dataset.node;
+
+        // Start connecting from output port
+        if (OUTPUT_PORTS.includes(portName)) {
+          const n = nodes.find(n => n.id === nodeId);
+          const pos = n ? getPortPos(n, portName) : { x: e.clientX, y: e.clientY };
+          connecting = { fromNodeId: nodeId, sourcePort: portName, startX: pos.x, startY: pos.y, curX: e.clientX, curY: e.clientY };
+        }
+        // Complete connection on input port
+        else if (portName === 'in' && connecting) {
+          // Prevent self-connection
+          if (connecting.fromNodeId !== nodeId) {
+            const edgeId = crypto.randomUUID();
+            const edge = { id: edgeId, source: connecting.fromNodeId, target: nodeId, sourcePort: connecting.sourcePort, label: connecting.sourcePort };
+            edges.push(edge);
+            log(`🔗 Connected ${connecting.sourcePort} → ${nodeId}`, 'success');
+          }
+          connecting = null;
+          render();
+          updateSelectedNode();
+        }
+        return;
+      }
+
+      // Node selection (event delegation on canvas)
+      const nodeEl = e.target.closest('.node');
+      if (nodeEl) {
+        selectedNodeId = nodeEl.dataset.id;
+        // Start drag (only if not on a port)
+        const n = nodes.find(n => n.id === selectedNodeId);
+        if (n && !e.target.closest('.port')) {
+          dragging = { nodeId: n.id, offsetX: e.clientX - n.position.x, offsetY: e.clientY - n.position.y };
+        }
+        render();
+      } else {
+        // Click on empty canvas → deselect
+        if (e.target.closest('.canvas-wrap')) {
+          selectedNodeId = null;
+          render();
+        }
+      }
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (dragging) {
+        const n = nodes.find(n => n.id === dragging.nodeId);
+        if (n) {
+          n.position.x = e.clientX - dragging.offsetX;
+          n.position.y = e.clientY - dragging.offsetY;
+          render();
+        }
+      }
+      if (connecting) {
+        connecting.curX = e.clientX;
+        connecting.curY = e.clientY;
+        drawArrows(); // just redraw arrows (including temp line)
+      }
+    });
+
+    document.addEventListener('mouseup', (e) => {
+      if (connecting) {
+        // Check if we're over an input port
+        const portEl = e.target.closest('.port');
+        if (portEl && portEl.dataset.port === 'in' && connecting.fromNodeId !== portEl.dataset.node) {
+          const edgeId = crypto.randomUUID();
+          const edge = { id: edgeId, source: connecting.fromNodeId, target: portEl.dataset.node, sourcePort: connecting.sourcePort, label: connecting.sourcePort };
+          edges.push(edge);
+          log(`🔗 Connected ${connecting.sourcePort} → ${portEl.dataset.node}`, 'success');
+          render();
+          updateSelectedNode();
+        }
+        // Cancel connecting either way
+        connecting = null;
+        drawArrows();
+      }
+      dragging = null;
+    });
+
+    // ─── Run / Stop / Persistence ───────────────────────
+    function workflowSnapshot() {
+      return {
+        id: currentWfId(), name: document.getElementById('wfName').value.trim() || 'Untitled Workflow',
+        nodes: structuredClone(nodes.map(({_status, ...node}) => node)),
+        edges: structuredClone(edges.map(({_active, ...edge}) => edge)),
+        globalMaxLoops: 1,
+        maxUpstreamLength: Number(document.getElementById('cfgMaxUpstream').value) || 0,
+        createdAt: workflowCreatedAt, updatedAt: Date.now()
+      };
+    }
+    function saveWorkflow() {
+      send('workflow:save', { workflow: workflowSnapshot() });
+    }
+    function loadWorkflow() {
+      const id = document.getElementById('savedWorkflows').value;
+      if (!id) { log('请先选择已保存的工作流', 'error'); return; }
+      send('workflow:load', { id });
+    }
+    function runWorkflow() {
+      const input = document.getElementById('runInput').value.trim();
+      if (!input) { log('请填写本次输入', 'error'); return; }
+      document.getElementById('finalOutput').textContent = '正在运行…';
+      send('workflow:create', workflowSnapshot());
+      send('workflow:run', { workflowId: currentWfId(), input });
+      log('▶ Workflow started', 'success');
+    }
+
+    function stopWorkflow() { send('workflow:stop', { workflowId: currentWfId() }); cancelAllAsks(); log('■ Stopped', 'error'); }
+
+    function clearAll() {
+      nodes = []; edges = []; selectedNodeId = null;
+      workflowId = crypto.randomUUID();
+      workflowCreatedAt = Date.now();
+      document.getElementById('finalOutput').textContent = '运行完成后显示在这里';
+      render();
+    }
+
+    function updateRunState(data) {
+      const state = data.state;
+      if (!state) return;
+      const pill = document.getElementById('statusPill');
+      pill.className = `status-pill ${state.status}`;
+      pill.textContent = state.status.toUpperCase();
+      document.getElementById('iterBadge').textContent = state.iteration;
+      if (state.status === 'paused') log('⏸ 等待你回答节点提问…', 'info');
+      if (['idle', 'error', 'done'].includes(state.status)) cancelAllAsks();
+      if (state.status === 'error') {
+        document.getElementById('finalOutput').textContent = state.error || '执行失败';
+        log(state.error || '执行失败', 'error');
+      } else if (state.status === 'done') {
+        document.getElementById('finalOutput').textContent = state.finalOutput ?? '';
+        log('最终结果已更新', 'success');
+      }
+      for (const n of nodes) { const ns = state.results?.[n.id]; n._status = ns ? ns.status : ''; }
+      render();
+    }
+
+    // ─── 节点提问（ask_user） ─────────────────────────────
+    let askQueue = [];      // 待回答的提问（多个 agent 并行时可能排队）
+    let currentAsk = null;  // 当前展示在弹窗里的提问
+
+    function enqueueAsk(ask) {
+      if (!ask || !ask.askId) return;
+      if (currentAsk && currentAsk.askId === ask.askId) return;
+      if (askQueue.some(a => a.askId === ask.askId)) return;
+      askQueue.push(ask);
+      log(`❓ ${ask.nodeLabel || ask.nodeId} 需要你确认`, 'info');
+      if (!currentAsk) showNextAsk();
+    }
+
+    function showNextAsk() {
+      currentAsk = askQueue.shift() || null;
+      const dlg = document.getElementById('askDialog');
+      if (!currentAsk) { dlg.style.display = 'none'; return; }
+
+      document.getElementById('askNode').textContent =
+        (currentAsk.nodeLabel || currentAsk.nodeId) +
+        (currentAsk.iteration ? ` · 第 ${currentAsk.iteration} 轮` : '');
+      document.getElementById('askQuestion').textContent = currentAsk.question;
+
+      const optionsEl = document.getElementById('askOptions');
+      optionsEl.replaceChildren();
+      for (const option of currentAsk.options || []) {
+        const btn = document.createElement('button');
+        btn.className = 'btn ask-option';
+        btn.textContent = option;
+        btn.onclick = () => answerAsk(option);
+        optionsEl.appendChild(btn);
+      }
+
+      const input = document.getElementById('askAnswer');
+      input.value = '';
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitAskAnswer(); }
+      };
+      dlg.style.display = 'flex';
+      setTimeout(() => input.focus(), 30);
+    }
+
+    function answerAsk(value) {
+      if (!currentAsk) return;
+      const text = String(value ?? '').trim();
+      if (!text) { log('回答不能为空', 'error'); return; }
+      send('run:answer', { askId: currentAsk.askId, answer: text });
+      log(`💬 已回复 ${currentAsk.nodeLabel || currentAsk.nodeId}`, 'success');
+      showNextAsk();
+    }
+
+    function submitAskAnswer() {
+      answerAsk(document.getElementById('askAnswer').value);
+    }
+
+    function cancelAllAsks() {
+      askQueue = [];
+      currentAsk = null;
+      document.getElementById('askDialog').style.display = 'none';
+    }
+
+    function log(text, cls = '') {
+      const el = document.getElementById('runLog');
+      const entry = document.createElement('div');
+      entry.className = `entry ${cls}`;
+      entry.textContent = text;
+      el.appendChild(entry);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    // ─── Init ───────────────────────────────────────────
+    connectWS();
+    render();
+  </script>
+</body>
+</html>

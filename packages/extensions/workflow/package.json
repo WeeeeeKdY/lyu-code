@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "npm --prefix ../wf-agent-guard run build && tsc -p tsconfig.json && node -e \"require('node:fs').copyFileSync('../wf-agent-guard/dist/index.js', 'dist/agent-guard.js')\"",
+    "test": "node test/ask.e2e.mjs"
   },
   "files": [
     "dist",
@@ -16,11 +17,13 @@
       "dist/index.js"
     ]
   },
-  "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@earendil-works/pi-ai": "^0.87.1"
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-ai": "^1.5.2",
     "typescript": "^5.8.0",
     "@types/node": "^22.0.0"
   },
