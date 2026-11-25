@@ -1673,6 +1673,9 @@ const PORT_FILE = path.join(os.homedir(), ".pi", "agent", "workflow-server.json"
 const answerToken = crypto.randomBytes(24).toString("hex");
 
 function writePortFile(actualPort: number) {
+  // 隔离运行的实例（测试）是临时的，不该改写这个指针：否则指向一个随时会退出的
+  // 端口，别的会话和 Lyu 读到的都是假地址。
+  if (process.env.LYU_WORKFLOW_ISOLATED === "1") return;
   try {
     fs.mkdirSync(path.dirname(PORT_FILE), { recursive: true });
     fs.writeFileSync(PORT_FILE, JSON.stringify({
@@ -1681,7 +1684,9 @@ function writePortFile(actualPort: number) {
       pid: process.pid,
       token: answerToken,
       updatedAt: Date.now(),
-    }, null, 2), { mode: 0o600 });
+    }, null, 2));
+    // mode 只在创建时生效；文件已存在时会被忽略，所以要显式收紧到 0600。
+    fs.chmodSync(PORT_FILE, 0o600);
   } catch { /* ok */ }
 }
 
