@@ -65,6 +65,7 @@ interface WorkflowNode {
     disabledTools?: string[];    // 黑名单模式：禁用这些工具
     customTools?: CustomTool[];  // 通过 extension 注册的自定义工具
     extensions?: string[];       // 额外加载到本节点子进程的 pi 扩展（路径，支持 ~）
+    mcpConfig?: string;          // MCP 配置文件路径（支持 ~）；不给就用 ~/.pi/agent/mcp.json
     maxLoops?: number;
     maxTokens?: number;
     // if: declarative condition; legacy JS expressions are rejected
@@ -988,12 +989,12 @@ function findGuardExtPath(): string {
  *   - WORKFLOW_NODE_EXTENSIONS（逗号分隔）
  * 路径写错直接报错，而不是悄悄少加载一个扩展——静默降级会让人以为上下文生效了。
  */
-function resolveNodeExtensions(node: WorkflowNode): string[] {
+function resolveNodeExtensions(node: WorkflowNode, extra: string[] = []): string[] {
   const fromEnv = (process.env.WORKFLOW_NODE_EXTENSIONS ?? "")
     .split(",")
     .map(entry => entry.trim())
     .filter(Boolean);
-  const requested = [...(node.config.extensions ?? []), ...fromEnv];
+  const requested = [...(node.config.extensions ?? []), ...extra, ...fromEnv];
   const resolved: string[] = [];
   for (const raw of requested) {
     const expanded = raw.startsWith("~") ? path.join(os.homedir(), raw.slice(1)) : raw;
@@ -1005,6 +1006,91 @@ function resolveNodeExtensions(node: WorkflowNode): string[] {
     resolved.push(absolute);
   }
   return resolved;
+}
+
+/**
+ * 找到 MCP 适配器扩展。
+ *
+ * `--mcp-config` 不是 pi 核心的旗标，而是 `pi-mcp-adapter` 扩展注册的（pi --help 里
+ * 列在「Extension CLI Flags」下）。节点默认 `--no-extensions`，所以要让 MCP 工具真的
+ * 能用，光传配置文件不够，必须把这个适配器也显式加载进来，否则子进程直接报
+ * Unknown option: --mcp-config。
+ */
+function findMcpAdapterPath(): string | null {
+  const candidates = [
+    process.env.WORKFLOW_MCP_ADAPTER,
+    path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-mcp-adapter", "index.ts"),
+    path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-mcp-adapter", "dist", "index.js"),
+  ].filter((item): item is string => Boolean(item));
+  return candidates.find(candidate => fs.existsSync(candidate)) ?? null;
+}
+
+/**
+ * 节点声明的自定义工具，按类型落到真实的执行通道上。
+ *
+ * 以前这里直接抛「拒绝以假工具运行」：自定义工具只是前端的一个标签，没有执行器，
+ * 让节点带着一个假工具跑等于骗 agent。现在三类各自有真实通道：
+ *   - builtin：pi 自带工具，无需注入，只需在白名单里放行；
+ *   - extension：由扩展注册，把扩展加载进来就行（路径同节点扩展白名单）；
+ *   - mcp：真正的问题在配置，所以校验服务器名确实存在，并把 `--mcp-config` 透传给子进程。
+ * 只有确实兑现不了的时候才报错，且报错要告诉人下一步怎么做。
+ */
+function resolveCustomTools(node: WorkflowNode): { extensions: string[]; mcpConfig?: string; adapter?: string } {
+  const tools = node.config.customTools ?? [];
+  const extensions: string[] = [];
+  const wantedServers: string[] = [];
+
+  for (const tool of tools) {
+    if (tool.type === "builtin") continue;
+    if (tool.type === "extension") {
+      if (!tool.source) throw new Error(`节点 ${node.label} 的工具 ${tool.name} 没填扩展来源`);
+      extensions.push(tool.source);
+      continue;
+    }
+    if (tool.type === "mcp") {
+      if (!tool.source) throw new Error(`节点 ${node.label} 的工具 ${tool.name} 没填 MCP 服务器名`);
+      wantedServers.push(tool.source);
+      continue;
+    }
+    throw new Error(`节点 ${node.label} 的工具 ${tool.name} 类型未知：${String(tool.type)}`);
+  }
+
+  if (!wantedServers.length) return { extensions };
+
+  const configured = node.config.mcpConfig
+    ?? process.env.WORKFLOW_MCP_CONFIG
+    ?? path.join(os.homedir(), ".pi", "agent", "mcp.json");
+  const mcpConfig = configured.startsWith("~")
+    ? path.join(os.homedir(), configured.slice(1))
+    : path.resolve(configured);
+
+  let servers: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(mcpConfig, "utf8")) as {
+      mcpServers?: Record<string, unknown>;
+      servers?: Record<string, unknown>;
+    };
+    servers = parsed.mcpServers ?? parsed.servers ?? {};
+  } catch {
+    throw new Error(
+      `节点 ${node.label} 要用 MCP 工具，但读不到 MCP 配置 ${mcpConfig}；先用 \`pi mcp add ${wantedServers[0]} ...\` 配置，或在节点里填 MCP 配置路径`,
+    );
+  }
+
+  const missing = wantedServers.filter(name => !(name in servers));
+  if (missing.length) {
+    throw new Error(
+      `节点 ${node.label} 的 MCP 服务器不在 ${mcpConfig} 里：${missing.join(", ")}；用 \`pi mcp add ${missing[0]} ...\` 添加，或改工具的来源`,
+    );
+  }
+
+  const adapter = findMcpAdapterPath();
+  if (!adapter) {
+    throw new Error(
+      `节点 ${node.label} 要用 MCP 工具，但找不到 pi-mcp-adapter（--mcp-config 是它注册的）；先 \`pi install npm:pi-mcp-adapter\` 或用 WORKFLOW_MCP_ADAPTER 指定路径`,
+    );
+  }
+  return { extensions, mcpConfig, adapter };
 }
 
 /** 用独立子进程执行 agent 节点 */
@@ -1020,7 +1106,8 @@ async function executeAgentNode(
   const prompt = toolInfo ? `${toolInfo}\n\n${basePrompt}` : basePrompt;
 
   if (node.config.customTools?.length) {
-    throw new Error(`节点 ${node.label} 配置了尚未绑定执行器的自定义工具；拒绝以假工具运行`);
+    // 校验提前做：不能等子进程跑起来才发现工具根本不存在。
+    resolveCustomTools(node);
   }
 
   const cmdName = process.env.LYU_WORKFLOW_AGENT_COMMAND || "pi";
@@ -1036,9 +1123,18 @@ async function executeAgentNode(
   args.push("--extension", findGuardExtPath());
 
   // 节点点名的扩展（codegraph 之类），仍然受 --no-extensions 约束，只放行这些。
-  for (const extensionPath of resolveNodeExtensions(node)) {
+  // 自定义工具里的 extension 类型也走同一条路。
+  const customTools = resolveCustomTools(node);
+  for (const extensionPath of resolveNodeExtensions(node, customTools.extensions)) {
     args.push("--extension", extensionPath);
     process.stderr.write(`[workflow] ${node.label} +extension ${extensionPath}\n`);
+  }
+
+  // MCP：服务器已经在配置里校验过了，这里把适配器和配置文件一起透传到子进程。
+  if (customTools.mcpConfig && customTools.adapter) {
+    args.push("--extension", customTools.adapter);
+    args.push("--mcp-config", customTools.mcpConfig);
+    process.stderr.write(`[workflow] ${node.label} mcp-config ${customTools.mcpConfig}\n`);
   }
 
   // 添加 prompt
@@ -1048,7 +1144,11 @@ async function executeAgentNode(
   const envExtra: Record<string, string> = {};
   const whitelist = (node.config.tools as string[] | undefined);
   const blacklist = (node.config.disabledTools as string[] | undefined);
-  if (whitelist && whitelist.length > 0) envExtra.WORKFLOW_TOOLS_WHITELIST = whitelist.join(",");
+  if (whitelist && whitelist.length > 0) {
+    // 白名单模式下，自定义工具也必须被放行，否则声明了也用不了。
+    const withCustom = [...whitelist, ...(node.config.customTools ?? []).map(tool => tool.name)];
+    envExtra.WORKFLOW_TOOLS_WHITELIST = [...new Set(withCustom)].join(",");
+  }
   if (blacklist && blacklist.length > 0) envExtra.WORKFLOW_TOOLS_BLACKLIST = blacklist.join(",");
 
   // 提问通道：把本次 run 的 /api/ask 地址 + 节点身份传给子进程，
