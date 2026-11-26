@@ -1,0 +1,35 @@
+{
+  "name": "lyu-extension-workflow",
+  "version": "0.2.0",
+  "description": "Workflow extension for lyu-code — visually compose multi-agent pipelines",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "node test/ask.e2e.mjs"
+  },
+  "files": [
+    "src",
+    "frontend/dist"
+  ],
+  "pi": {
+    "extensions": [
+      "src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-ai": "^1.5.2",
+    "typescript": "^5.8.0",
+    "@types/node": "^22.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeeeeeKdY/lyu-code.git",
+    "directory": "packages/extensions/workflow"
+  }
+}

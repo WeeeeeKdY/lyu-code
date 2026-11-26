@@ -1,0 +1,29 @@
+{
+  "name": "lyu-extension-wf-agent-guard",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {},
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "@types/node": "^22.0.0",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "pi": {
+    "extensions": [
+      "src/index.ts"
+    ]
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeeeeeKdY/lyu-code.git",
+    "directory": "packages/extensions/wf-agent-guard"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "main": "src/index.ts"
+}
