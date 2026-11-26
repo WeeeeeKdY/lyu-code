@@ -1,7 +1,5 @@
 node_modules/
 dist/
-!packages/extensions/workflow/frontend/dist/
-!packages/extensions/workflow/frontend/dist/index.html
 *.tsbuildinfo
 .DS_Store
 *.map

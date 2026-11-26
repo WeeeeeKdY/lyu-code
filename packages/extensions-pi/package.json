@@ -1,0 +1,39 @@
+{
+  "name": "@lyu/extensions",
+  "version": "0.2.0",
+  "description": "Lyu 的扩展集合：作为「包」被引擎加载，依赖从本包解析",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "extensions/codegraph.ts",
+      "extensions/guard.ts",
+      "extensions/memory.ts",
+      "extensions/plannotator-auto.ts",
+      "extensions/stats.ts",
+      "extensions/subagent.ts",
+      "extensions/todo.ts"
+    ]
+  },
+  "files": [
+    "extensions",
+    "src"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.7.1"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeeeeeKdY/lyu-code.git",
+    "directory": "packages/extensions-pi"
+  },
+  "license": "MIT"
+}

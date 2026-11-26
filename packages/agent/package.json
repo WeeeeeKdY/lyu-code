@@ -1,0 +1,68 @@
+{
+  "name": "lyu-code",
+  "version": "0.2.0",
+  "description": "Lyu — 自带引擎与扩展的 coding agent（引擎随包发布，非薄壳）",
+  "type": "module",
+  "bin": {
+    "lyu": "bin/lyu.js",
+    "lyu-init": "bin/lyu-init.js"
+  },
+  "piConfig": {
+    "name": "lyu",
+    "configDir": ".lyu"
+  },
+  "files": [
+    "README.md",
+    "bin",
+    "dist",
+    "docs",
+    "schemas"
+  ],
+  "vendor": {
+    "piCLI": "1.5.2"
+  },
+  "scripts": {
+    "vendor": "node scripts/vendor.mjs",
+    "prepack": "node scripts/vendor.mjs"
+  },
+  "dependencies": {
+    "@lyu/extensions": "file:../extensions-pi",
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-codemode": "1.5.2",
+    "@earendil-works/pi-mcp": "1.5.2",
+    "@earendil-works/pi-tui": "1.5.2",
+    "@silvia-odwyer/photon-node": "0.3.4",
+    "brace-expansion": "5.0.12",
+    "chalk": "6.0.0",
+    "cross-spawn": "7.0.6",
+    "diff": "8.0.4",
+    "highlight.js": "10.7.3",
+    "hosted-git-info": "9.0.3",
+    "ignore": "7.0.8",
+    "jiti": "2.7.0",
+    "lovely-mermaid": "0.3.3",
+    "minimatch": "11.0.3",
+    "proper-lockfile": "4.1.2",
+    "quickjs-wasi": "3.6.2",
+    "semver": "7.8.5",
+    "typebox": "1.3.27",
+    "undici": "8.12.3",
+    "yaml": "2.9.0"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeeeeeKdY/lyu-code.git",
+    "directory": "packages/agent"
+  },
+  "license": "MIT",
+  "keywords": [
+    "coding-agent",
+    "ai",
+    "lyu",
+    "pi"
+  ]
+}
