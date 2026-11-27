@@ -40,11 +40,34 @@ if (!forced && existsSync(stampPath) && readFileSync(stampPath, "utf8").trim() =
  * piConfig，只有少数几处上游把 "pi" 直接写死在代码里。我们改这些地方，而不是改上游
  * 源码 —— 补丁点少、看得见、升级时对不上会立刻报错。
  *
- * 两条铁律：
- *   1. 绝不硬编成 "Lyu"。补丁只许把「写死的 pi」换成「从 APP_NAME 派生」，
- *      APP_NAME = "pi" 时结果必须与上游逐字节一致，否则就不是改品牌而是分叉。
- *   2. 补丁打不上就中止。命中 0 等于没打，装上去的东西会静默说谎 —— 那比装不上更糟。
+ * 补丁分两类，判据不同，别混着用：
+ *
+ *   kind: "brand" —— 换品牌。铁律是「绝不硬编成 Lyu」：只许把写死的 pi 换成从
+ *     APP_NAME 派生，APP_NAME = "pi" 时结果必须与上游逐字节等价。做不到等价的，
+ *     不属于这一类。
+ *
+ *   kind: "policy" —— 换行为：发布源、遥测、外链。这一类天生做不到与上游等价
+ *     （上游就是要往 pi.dev 报，我们就是要不报），所以判据换成：
+ *       1) 每条都带环境变量出口，用户能改回去（LYU_*_URL）；
+ *       2) 必须在 NOTICE.md 里列出来，写清改了什么、为什么；
+ *       3) 必须有 expect 计数，命中数不对就中止 —— 上游多一处或少一处都要当场发现。
+ *
+ * 两类共同的铁律：补丁打不上就中止。命中 0 等于没打，装上去的东西会静默说谎 ——
+ * 那比装不上更糟。命中数少于预期更糟：那意味着同一个常量的另一份副本没被改到。
  */
+
+/**
+ * 生成"把 APP_NAME 首字母大写"的 dist 源码片段。
+ *
+ * 为什么要在补丁里拼这段代码：APP_NAME 是 "lyu"（小写，命令行名要小写），
+ * 所以品牌名出现在句首时必须自己大写 —— 否则横幅下面会印出「lyu can explain…」。
+ * 字标处上游本来就是 charAt(0).toUpperCase()，这里保持一致。
+ */
+const CAP_NAME = "${APP_NAME.charAt(0).toUpperCase()}${APP_NAME.slice(1)}";
+
+/** 把一句自我介绍里的两处品牌名换成大写品牌名。 */
+const capitalizeBrand = (sentence) => `\`${sentence.replaceAll("Pi", CAP_NAME)}\``;
+
 const PATCHES = [
 	{
 		id: "header-wordmark",
@@ -81,12 +104,117 @@ const PATCHES = [
 	},
 	{
 		id: "header-hint-copy",
-		why: "横幅下面那句自我介绍里点了两次 Pi",
+		kind: "brand",
+		why: "横幅下面那句自我介绍里点了两次 Pi。两份副本的引号形态不同：未压缩版是模板串，bundle 里是双引号字面量 —— 所以必须连引号一起换成模板串，否则 ${APP_NAME} 不会被求值，界面上会原样出现七个字符",
 		patches: [
 			{
-				find: "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.",
-				replace: "Lyu can explain its own features and look up its docs. Ask it how to use or extend Lyu.",
+				only: "modes/interactive/interactive-mode.js",
+				find: "`Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`",
+				replace: capitalizeBrand("Pi can explain its own features and look up its docs. Ask it how to use or extend Pi."),
 				required: true,
+				expect: 1,
+			},
+			{
+				only: "bundle/chunks/",
+				find: '"Pi can explain its own features and look up its docs. Ask it how to use or extend Pi."',
+				replace: capitalizeBrand("Pi can explain its own features and look up its docs. Ask it how to use or extend Pi."),
+				required: true,
+				expect: 1,
+			},
+		],
+	},
+	{
+		id: "release-channel",
+		kind: "policy",
+		why: "版本检查 / lyu update 的发布源。上游指 pi.dev，跟着跑会把上游 pi 装回来；改成我们自己的 npm 包 —— 装不装得上由我们的发布决定，不再是上游的发布决定",
+		patches: [
+			{
+				find: '"https://pi.dev/api/latest-version"',
+				replace: '(process.env.LYU_LATEST_VERSION_URL || "https://registry.npmjs.org/lyu-code/latest")',
+				required: true,
+				expect: 2,
+			},
+		],
+	},
+	{
+		id: "install-telemetry-removed",
+		kind: "policy",
+		why: "启动时往 pi.dev/api/report-install 报一条安装记录。我们不需要安装量数据，也没有理由替上游收集 —— 直接摘掉，不是改成默认关（默认关还能被 PI_TELEMETRY=1 打开）",
+		patches: [
+			{
+				only: "modes/interactive/interactive-mode.js",
+				find: "    reportInstallTelemetry(version) {\n        if (process.env.PI_OFFLINE) {",
+				replace: "    reportInstallTelemetry(version) {\n        return; // lyu: 安装遥测已移除，见 NOTICE.md\n        if (process.env.PI_OFFLINE) {",
+				required: true,
+				expect: 1,
+			},
+			{
+				only: "bundle/chunks/",
+				find: "reportInstallTelemetry(version2){process.env.PI_OFFLINE||",
+				replace: "reportInstallTelemetry(version2){return;process.env.PI_OFFLINE||",
+				required: true,
+				expect: 1,
+			},
+		],
+	},
+	{
+		id: "changelog-url",
+		kind: "policy",
+		why: "「有新版本」提示里的 Changelog 链接指向 pi.dev（我们发了版，那里不会有我们的更新日志）",
+		patches: [
+			{
+				find: '"https://pi.dev/changelog"',
+				replace: '(process.env.LYU_CHANGELOG_URL || "https://github.com/WeeeeeKdY/lyu-code/releases")',
+				required: true,
+				expect: 2,
+			},
+		],
+	},
+	{
+		id: "installer-command-hint",
+		kind: "policy",
+		why: "「你这个 npm 装法不受支持，改用官方安装脚本」的提示，给的命令是 curl https://pi.dev/install.sh | sh —— 用户照着做就把上游 pi 装回来了。这是全表里唯一一条会诱导用户装错东西的补丁",
+		patches: [
+			{
+				only: "package-manager-cli.js",
+				find:
+					'process.platform === "win32"\n                            ? \'powershell -c "irm https://pi.dev/install.ps1 | iex"\'\n' +
+					'                            : "curl -fsSL https://pi.dev/install.sh | sh"',
+				replace: '"https://github.com/WeeeeeKdY/lyu-code#install"',
+				required: true,
+				expect: 1,
+			},
+			{
+				only: "bundle/chunks/",
+				find:
+					'process.platform==="win32"?\'powershell -c "irm https://pi.dev/install.ps1 | iex"\'' +
+					':"curl -fsSL https://pi.dev/install.sh | sh"',
+				replace: '"https://github.com/WeeeeeKdY/lyu-code#install"',
+				required: true,
+				expect: 1,
+			},
+		],
+	},
+	{
+		id: "download-hint-url",
+		kind: "policy",
+		why: "装不上更新时给的『去这里下载』指向上游 pi 的 releases —— 照做就把 pi 装回来了",
+		patches: [
+			{
+				// config.js 里本来就在模板串里，直接插值即可
+				only: "config.js",
+				find: "`Download from: https://github.com/earendil-works/pi/releases/latest`",
+				replace: "`Download from: ${process.env.LYU_DOWNLOAD_URL || \"https://github.com/WeeeeeKdY/lyu-code/releases/latest\"}`",
+				required: true,
+				expect: 1,
+			},
+			{
+				// bundle 里是双引号字面量，必须连引号一起换成模板串，否则插值不会求值
+				only: "bundle/chunks/",
+				find: '"Download from: https://github.com/earendil-works/pi/releases/latest"',
+				replace: "`Download from: ${process.env.LYU_DOWNLOAD_URL || \"https://github.com/WeeeeeKdY/lyu-code/releases/latest\"}`",
+				required: true,
+				expect: 1,
 			},
 		],
 	},
@@ -125,6 +253,17 @@ function applyPatches(distDir) {
 		}
 		console.error("[vendor] 上游可能改了这段代码。去 dist 里找到原文，更新 scripts/vendor.mjs 的 PATCHES 再重来。");
 		console.error("[vendor] 中止：带着没打上的补丁发出去，等于装了个会说谎的引擎。");
+		process.exit(1);
+	}
+
+	// 命中数必须与 expect 一致。少了意味着同一常量的另一份副本没被改到 ——
+	// 引擎照跑，但有一部分行为还指着上游，这种"半个补丁"最难查，所以直接拦下。
+	const miscount = all.filter(({ patch }) => patch.expect !== undefined && (hits.get(patch) ?? 0) !== patch.expect);
+	if (miscount.length > 0) {
+		for (const { entry, patch } of miscount) {
+			console.error(`[vendor] 补丁 ${entry.id} 命中 ${hits.get(patch) ?? 0} 次，预期 ${patch.expect} 次：${entry.why}`);
+		}
+		console.error("[vendor] 中止：全改或全不改，不许只改一半。");
 		process.exit(1);
 	}
 
@@ -184,6 +323,10 @@ try {
 	}
 
 	writeFileSync(stampPath, `${version}\n`);
+
+	// 品牌自检：把"还剩多少不是我们的"变成一个可测数字，而不是靠 grep 猜。
+	execFileSync(process.execPath, [join(root, "scripts", "brand-check.mjs")], { stdio: "inherit" });
+
 	console.log(`[vendor] 完成 → dist/ (${version})`);
 } finally {
 	rmSync(tmp, { recursive: true, force: true });
