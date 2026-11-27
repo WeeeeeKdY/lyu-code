@@ -1,6 +1,6 @@
 # Lyu 产品化计划（lyu + lyu-desktop）
 
-> 状态基线：2026-11-26。第 1 步已完成并实测通过，其余待做。
+> 状态基线：2026-11-27。第 1、2、3.1、3.2、3.3 步已完成并实测通过；剩下的是发版决策与第 4 步出站清洗。
 > 本文是所有后续工作的执行清单，每一步都带**可验证的判据**（不接受"看起来好了"）。
 
 ## 0. 背景：机器上曾经同时跑着三个引擎
@@ -83,16 +83,24 @@ TUI 长句                            → "Lyu can explain its own features and 
 
 | 项 | 现状 | 处置 |
 | --- | --- | --- |
-| 安装遥测 | 启动时向 `pi.dev/api/report-install` 报版本 | 关闭 |
-| 版本检查 / `lyu update` | 会 `npm i -g` 把上游 pi 装回来 | 认自己的发布源（待决策） |
-| 会话分享 | `pi.dev/session/` | 关闭或指向自己 |
-| `radius.pi.dev` | 35 处，上游托管的 LLM 网关 | 保留但标注为上游服务 |
-| `--help` 措辞 | 仍有 "pi" | 走补丁表 |
-| **LICENSE / NOTICE** | **vendored 的 MIT dist 没带版权声明** | **必须补** —— 这不是洁癖，是 MIT 的合规义务 |
+| 安装遥测 | 启动时向 `pi.dev/api/report-install` 报版本 | ✅ 已移除（不是改成默认关 —— 默认关还能被 `PI_TELEMETRY=1` 打开） |
+| 版本检查 / `lyu update` | 按上游 `packageName` 判定「该更新」，进而装回上游 pi | ✅ 发布源改指 npm 上的 `lyu-code`（`LYU_LATEST_VERSION_URL` 可覆盖）。实测假源返回 9.9.9 时提示的是 `lyu-code@9.9.9` |
+| 更新日志 / 下载提示 | 链到 `pi.dev/changelog`、上游 releases | ✅ 改指本仓（`LYU_CHANGELOG_URL` / `LYU_DOWNLOAD_URL`） |
+| 安装脚本提示 | 「npm 装法不受支持」时给的是 `curl -fsSL https://pi.dev/install.sh \| sh` | ✅ 改指本仓安装说明 —— 这是全表唯一会诱导用户装错东西的一条 |
+| 会话分享 | `pi.dev/session/` | 保留（我们没有查看器，关掉等于把功能做成坏的），在 NOTICE 里标注 |
+| `radius.pi.dev` | 36 处，上游托管的 LLM 网关 | 保留，NOTICE 里标注为上游服务 |
+| `pi.dev/oauth`、theme schema、单文件版自更新源 | 各 2 处 | 保留并标注；最后一项在我们的分发形态下走不到 |
+| **LICENSE / NOTICE** | **vendored 的 MIT dist 没带版权声明** | ✅ 已补 `LICENSE` + `NOTICE.md`（上游项目、版本、版权人、MIT 全文、我们改了什么、仍是上游服务的清单） |
 
-### 3.3 品牌自检
+### 3.3 品牌自检 —— 已完成 ✅
 
-扫 `dist` 里的上游身份串生成白名单，每次 vendor 后自动比对，超范围即失败。这样"还剩多少不是我们的"是可测数字，不用靠 grep 猜。
+`scripts/brand-check.mjs`，vendor 末尾自动跑：
+
+- **必须为零**：我们替换掉的出站地址，出现即失败（说明补丁漏了）
+- **带基线计数**：`pi.dev` / `earendil-works` / `pi-coding-agent` / `pi-mono` / `PI_` 的数量与 `brand-baseline.json` 比对，动了就失败并打印分布
+
+它在实跑中派上过用场：加了 installer 补丁后计数从 66 掉到 62，脚本当场指出「我们的补丁生效了，可 `--update`」；
+反过来，上游哪天新增一处出口，涨上去也会当场失败。这样"还剩多少不是我们的"是数字，不是感觉。
 
 ## 4. 出站清洗（需求是反的，别做错）
 
@@ -108,6 +116,7 @@ TUI 长句                            → "Lyu can explain its own features and 
 
 ## 已知限制（写进文档，不藏着）
 
-- 第三方 TUI 扩展（beautiful-tui / powerline-footer / open-tui）自带 "Pi" 品牌，除非改它们或不用它们
-- `lyu update` 目前会装回上游，等决策
-- 桌面端数据目录仍是 `~/.paseo`（daemon），白标只到 UI 层
+- 第三方 TUI 扩展（beautiful-tui / powerline-footer / open-tui）自带 "Pi" 品牌。它们不在我们仓里，改法是改别人的包或不用它们；第一轮已把 `pi-open-tui` 留在外面
+- `lyu update` 现在认我们自己的发布源，但**只有当 npm 上存在比本地新的 `lyu-code` 版本时才能真更新**。npm 最新是 0.1.4、本地是 0.2.0，所以它现在的正确行为就是「already up to date」
+- 桌面端数据目录仍是 `~/.paseo`（daemon 侧）；`PASEO_*` 环境变量、`paseo://` 协议前缀都还在（协议里同时认 `lyu://`）
+- 桌面端连的是「已经在跑的 daemon」：daemon 若是旧的（例如全局 `@getpaseo/cli` 里那份 server），桌面端的引擎改动不生效
