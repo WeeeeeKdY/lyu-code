@@ -114,9 +114,29 @@ TUI 长句                            → "Lyu can explain its own features and 
 
 `lyu-code` 与 `lyu-desktop` 两仓提交推送；README / 交接单 / REBRAND.md 同步。
 
+## 6. 发布 —— 已完成 ✅
+
+`lyu-code@0.2.0` 已发到 npm，`latest` 从 `0.1.4` 切到 `0.2.0`。
+
+发布物的验证不看日志，看装下来跑：
+
+```
+npm i -g --prefix /tmp/lyupub lyu-code@0.2.0
+lyu --version                        → 0.2.0
+LICENSE / NOTICE.md                  → 都在包里
+grep 发布源补丁 / 安装提示补丁         → 各 2 个文件命中
+lyu update（真实网络）                → lyu is already up to date (v0.2.0)
+```
+
+**npm 11 的发布是异步的，这是个坑。** `PUT` 返回 `202 Accepted`，npm 会打印 `+ lyu-code@0.2.0` 且退出码 0，
+但当时 registry 上根本查不到 —— tarball 404、版本列表还是 0.1.0–0.1.4、metadata 的 modified 停在 9 月。
+真正的判据是 `https://registry.npmjs.org/lyu-code/-/lyu-code-0.2.0.tgz` 返回 200，实测用了 **14 分钟**。
+另一个可靠信号：再发一次若报 `You cannot publish over the previously published versions: 0.2.0`，
+说明服务端已经认下这个版本（在异步队列里），只需要等。
+
 ## 已知限制（写进文档，不藏着）
 
 - 第三方 TUI 扩展（beautiful-tui / powerline-footer / open-tui）自带 "Pi" 品牌。它们不在我们仓里，改法是改别人的包或不用它们；第一轮已把 `pi-open-tui` 留在外面
-- `lyu update` 现在认我们自己的发布源，但**只有当 npm 上存在比本地新的 `lyu-code` 版本时才能真更新**。npm 最新是 0.1.4、本地是 0.2.0，所以它现在的正确行为就是「already up to date」
+- `lyu update` 认我们自己的发布源。`lyu-code@0.2.0` 已发布，`latest` 已从 0.1.4 切到 0.2.0，所以它现在的输出 `already up to date (v0.2.0)` 是真的比对结果，不是兜底文案
 - 桌面端数据目录仍是 `~/.paseo`（daemon 侧）；`PASEO_*` 环境变量、`paseo://` 协议前缀都还在（协议里同时认 `lyu://`）
 - 桌面端连的是「已经在跑的 daemon」：daemon 若是旧的（例如全局 `@getpaseo/cli` 里那份 server），桌面端的引擎改动不生效
